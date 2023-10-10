@@ -1,0 +1,25 @@
+{
+    "sw_version": "11b1.2",
+    "hw_config": "Epson C8L",
+    "io_map": [
+        {"type": "input", "name": "sensor1", "physical": "0x00234"},
+        {"type": "input", "name": "sensor2", "physical": "0x00234"},
+        {"type": "input", "name": "sensor3", "physical": "0x00234"},
+        {"type": "input", "name": "sensor4", "physical": "0x00234"}
+    ],
+    "status_chart": {
+        "a": ["b", "c"],
+        "b": ["c", "d"],
+        "c": ["b"],
+        "d": ["a"]
+    },
+    "position": [
+        {"id": "1101", "coord": [100, 200, 90, 90, 45, 90], "type": "input"},
+        {"id": "1102", "coord": [100, 220, 90, 90, 45, 90], "type": "output"},
+        {"id": "1103", "coord": [300, 100, 90, 90, 90, 90], "type": "NG"},
+        {"id": "1104", "coord": [100, 200, 90, 90, 45, 90], "type": "process"}
+    ],
+    "ip": "192.168.0.100",
+    "port": "27013",
+    "timestamp": 1125934
+}
