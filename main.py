@@ -7,6 +7,8 @@ import logging
 # import psutil
 import platform
 import subprocess
+import re
+import threading
 
 
 class Vacuum:
@@ -30,6 +32,7 @@ class Vacuum:
         except Exception as e:
             logging.error("An unexpected error occurred: ", exc_info=True)
             return
+
         # init parameters
         self.config_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Config"
         self.query_config_topic = "/Devices/adc_agent/QueryConfig"
@@ -40,8 +43,11 @@ class Vacuum:
         self.start_port = int(self.loaded_data.get('start_port', None))
         self.end_port = int(self.loaded_data.get('end_port', None))
         self.config_path = self.loaded_data.get('config_path', None)
+        self.report_interval = self.loaded_data.get('report_interval', None)
+        self.connect_retry_times = self.loaded_data.get('connect_retry_times', None)
         self.port_in_use = 0
         self.connection_state = False
+        self.update_state = False
         if not self.target_address:
             logging.error("missing target_address in json")
             return
@@ -53,6 +59,12 @@ class Vacuum:
             return
         if not self.config_path:
             logging.error("missing config_path in json")
+            return
+        if not self.report_interval:
+            logging.error("missing report_interval in json")
+            return
+        if not self.connect_retry_times:
+            logging.error("missing connect_retry_times in json")
             return
         logging.info("All parameters loaded success.")
 
@@ -71,6 +83,7 @@ class Vacuum:
         except Exception as e:
             logging.error("An unexpected error occurred: ", exc_info=True)
             return
+        self.config_data = json.dumps(self.config_data)
 
         # connect to plc
         try:
@@ -81,6 +94,7 @@ class Vacuum:
         self.connect_to_target()
         # todo: maybe need to keep alive
 
+        # init mqtt
         self.client = mqtt.Client(broker, port)
         logging.info("mqtt client established.")
         self.client.on_message = self.on_message
@@ -101,16 +115,35 @@ class Vacuum:
         self.init_success = True
 
     def update_json(self, data):
+        self.update_state = False
+        # noinspection PyBroadException
+        try:
+            data = data.decode('utf-8')
+        except Exception as e:
+            logging.error("Receive bad message.")
+            return
+        try:
+            match = re.search('UPDATE_ANALOG,(\\d+)', str(data))
+            if match:
+                data = int(match.group(1))
+            else:
+                logging.error("Receive bad message.")
+                return
+        except ValueError:
+            logging.error("Receive bad message.")
+            return
         self.current_time = int(time.time())
         with open('Analog.json', 'r+') as f:
+            # todo: add try
             json_data = json.load(f)
-            json_data['value'] = float(data)
+            json_data['value'] = float(data/4000)
             json_data['interval'] = self.current_time - self.last_time
             json_data['timestamp'] = self.current_time
             f.seek(0)
             json.dump(json_data, f)
             f.truncate()
         self.last_time = self.current_time
+        self.update_state = True
 
     @staticmethod
     def on_connect(client, userdata, flags, rc):
@@ -118,25 +151,27 @@ class Vacuum:
             logging.info("Connected successfully.")
         else:
             logging.error(f"Connection failed with error code {rc}.")
-            return
+        # todo: add sth to exit the program
 
     def on_message(self, client, userdata, message):
         if message.topic == '/Devices/adc_agent/QueryConfig':  # query config
             client.publish(self.config_topic, self.config_data)
         elif message.topic == '' or message.topic == '':  # suck or release
-            self.sock.send("check_analog")  # to plc or to robot //plc=192.168.3.250
+            message = "CHECK_ANALOG"  # todo: change to check analog cmd
+            self.sock.send(message.encode())  # to plc or to robot //plc=192.168.3.250
             data = self.sock.recv(1024)
             self.update_json(data)  # update json
-            with open('Analog.json', 'r') as f:
-                json_data = json.load(f)
-                client.publish(self.analog_topic, json_data)
+            if self.update_state:
+                with open('Analog.json', 'r') as f:
+                    json_data = json.dumps(json.load(f))
+                    client.publish(self.analog_topic, json_data)
 
     def connect_to_target(self):
         self.port_in_use = 0
         logging.info("Starting to connecting to plc.")
         for p in range(self.start_port, self.end_port + 1):
             try:
-                logging.info(f"Starting to connecting to port{p}.")
+                logging.info(f"Starting to connecting to {self.target_address}:{p}.")
                 self.sock.connect((self.target_address, p))
                 # todo: check why takes 20s here
                 self.port_in_use = p
@@ -155,21 +190,30 @@ class Vacuum:
         else:
             self.connection_state = True
 
-    def check_connection_loop(self):
+    def scheduled_report(self):
+        logging.info("Thread start.")
+        message = "CHECK_ANALOG"  # todo: change to check analog cmd
+        message = message.encode()
         while True:
             self.update_connection_state()
-            if not self.connection_state:
-                logging.info("Connection closed, retrying.")
+            retry_times = 0
+            while not self.connection_state:
+                if retry_times == self.connect_retry_times:
+                    break
+                retry_times += 1
+                logging.info(f"Connection closed, retry time = {retry_times}.")
                 self.connect_to_target()
-            # try:
-            #     self.sock.send("123\r\n")
-            # except socket.error:
-            #     logging.info("Connection closed, retrying.")
-            #     self.connect_to_target()
-            time.sleep(10)
-
-    def scheduled_report(self):
-        pass
+                self.update_connection_state()
+            if retry_times == self.connect_retry_times:
+                break
+            self.sock.send(message)  # to plc or to robot
+            data = self.sock.recv(1024)
+            self.update_json(data)  # update json
+            if self.update_state:
+                with open('Analog.json', 'r') as f:
+                    json_data = json.dumps(json.load(f))
+                    self.client.publish(self.analog_topic, json_data)
+            time.sleep(self.report_interval)
 
 
 class PlatformInfo:
@@ -266,6 +310,20 @@ class PlatformInfo:
             return
 
 
+def extract_number(s):
+    try:
+        # Use regular expression to find the pattern 'CMD_name,' followed by one or more digits
+        match = re.search('UPDATE_ANALOG,(\\d+)', s)
+        # If a match is found
+        if match:
+            # Return the number as an integer
+            return int(match.group(1))
+    except ValueError:
+        pass
+    # If no match is found or if there's an error, return None
+    return None
+
+
 if __name__ == '__main__':
     # new = PlatformInfo("insider_transfer_DVI_1", "vacuum_1")
     # if new.init_success:
@@ -273,3 +331,7 @@ if __name__ == '__main__':
     #         new.update_info()
     #         time.sleep(new.interval)
     new = Vacuum("insider_transfer_DVI_1", "vacuum_1")
+    new_thread = threading.Thread(target=new.scheduled_report)
+    new_thread.start()
+    while True:
+        time.sleep(1)

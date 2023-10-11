@@ -3,5 +3,7 @@
     "target_address": "10.0.1.202",
     "start_port": "4096",
     "end_port": "4101",
-    "config_path": "Config.json"
+    "config_path": "Config.json",
+    "report_interval": "5",
+    "connect_retry_times": "3"
 }
