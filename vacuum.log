@@ -1,6 +1,0 @@
-2023-10-11 13:50:20,924 Initializing
-2023-10-11 13:50:20,924 vacuum_config load success.
-2023-10-11 13:50:20,924 All parameters loaded success.
-2023-10-11 13:50:20,924 Config.json load success.
-2023-10-11 13:50:20,924 Starting to connecting to plc.
-2023-10-11 13:50:20,924 Starting to connecting to 10.0.1.202:4096.

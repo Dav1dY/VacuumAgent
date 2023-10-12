@@ -5,5 +5,6 @@
     "end_port": "4101",
     "config_path": "Config.json",
     "report_interval": "5",
-    "connect_retry_times": "3"
+    "connect_retry_times": "3",
+    "socket_timeout": "1"
 }
