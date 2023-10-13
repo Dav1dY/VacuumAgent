@@ -37,6 +37,8 @@ class Vacuum:
         # init parameters
         # noinspection PyBroadException
         try:
+            self.broker = broker
+            self.port = port
             self.config_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Config"
             self.query_config_topic = "/Devices/adc_agent/QueryConfig"
             self.analog_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Analog"
@@ -99,34 +101,14 @@ class Vacuum:
         self.config_data = json.dumps(self.config_data)
 
         # init socket client
-        try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        except socket.error as e:
-            logging.error(f"Failed to create a socket. Error: {e}")
+        if not self.socket_init():
             return
         if not self.socket_connect():
             return
         # todo: may need to keep alive
 
         # init mqtt
-        # noinspection PyBroadException
-        try:
-            self.client = mqtt.Client(broker, port)
-            logging.info("mqtt client established.")
-        except Exception as e:
-            logging.error(f"Failed to establish mqtt client: {e}")
-            return
-        try:
-            self.client.on_message = self.on_message
-            logging.info("Message callback registered.")
-        except Exception as e:
-            logging.error(f"Failed to register message callback: {e}")
-            return
-        try:
-            self.client.on_connect = self.on_connect
-            logging.info("Connect callback registered.")
-        except Exception as e:
-            logging.error(f"Failed to register connect callback: {e}")
+        if not self.mqtt_client_init():
             return
         if not self.mqtt_connect():
             return
@@ -142,10 +124,19 @@ class Vacuum:
             logging.error("Mqtt client not exist.")
 
     def socket_connect(self) -> bool:
-        if self.sock:
-            self.connect_to_target()
-            if self.is_socket_connected():
-                return True
+        retry_times = 0
+        while retry_times < self.connect_retry_times:
+            if not self.sock:
+                if not self.socket_init():
+                    return False
+            retry_times += 1
+            logging.info(f"Retry time = {retry_times}.")
+            if self.connect_to_target():
+                if self.is_socket_connected():
+                    return True
+            # time.sleep(1)
+            self.sock = None
+        logging.error("Socket connect fail.")
         return False
     # todo: may add retry here or outside
 
@@ -187,10 +178,12 @@ class Vacuum:
         elif message.topic == '' or message.topic == '':  # suck or release
             message = "CHECK_ANALOG"  # todo: change to check analog cmd
             message = message.encode()
-            if self.sock and self.is_socket_connected():
+            if self.sock:
                 try:
-                    self.sock.send(message)  # to plc or to robot //plc=192.168.3.250
-                    logging.info("Command sent.")
+                    if self.socket_send(message):
+                        logging.info("Command sent.")
+                    else:
+                        logging.error("Failed to send command.")
                 except Exception as e:
                     logging.error(f"Failed to send command: {e}")
                     return
@@ -227,9 +220,39 @@ class Vacuum:
                     except Exception as e:
                         logging.error(f"An unexpected error occurred: {e}")
 
-    def connect_to_target(self):
+    def socket_init(self) -> bool:
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            return True
+        except socket.error as e:
+            logging.error(f"Failed to create a socket. Error: {e}")
+            return False
+
+    def mqtt_client_init(self) -> bool:
+        try:
+            self.client = mqtt.Client(self.broker, self.port)
+            logging.info("mqtt client established.")
+        except Exception as e:
+            logging.error(f"Failed to establish mqtt client: {e}")
+            return False
+        try:
+            self.client.on_message = self.on_message
+            logging.info("Message callback registered.")
+        except Exception as e:
+            logging.error(f"Failed to register message callback: {e}")
+            return False
+        try:
+            self.client.on_connect = self.on_connect
+            logging.info("Connect callback registered.")
+        except Exception as e:
+            logging.error(f"Failed to register connect callback: {e}")
+            return False
+        return True
+
+    def connect_to_target(self) -> bool:
         self.port_in_use = 0
         logging.info("Starting to connecting to plc.")
+
         for p in range(self.start_port, self.end_port + 1):
             try:
                 logging.info(f"Starting to connecting to {self.target_address}:{p}.")
@@ -237,39 +260,38 @@ class Vacuum:
                 # todo: figure out why takes 20s here
                 self.port_in_use = p
                 break
-            except socket.error as e:
-                logging.error(f"Port {p} fail : {e}.")
+            except socket.error:
+                logging.error(f"Port {p} fail.")
         if self.port_in_use == 0:
             logging.error("All port failed.")
-            return
+            return False
         logging.info(f"Connect to {self.target_address}:{self.port_in_use}.")
+        return True
 
     def is_socket_connected(self) -> bool:
+        # check self.sock before call this
         try:
-            ready_to_read, _, _ = select.select([self.sock], [], [], 0)
-        except select.error as e:
-            logging.error(f"Select error: {e}")
+            self.sock.sendall(b'')
+            # todo: check if this would cause problems on server
+            return True
+        except socket.error:
             return False
-
-        if ready_to_read:
-            try:
-                self.sock.setblocking(False)
-                data = self.sock.recv(16, socket.MSG_PEEK)
-                self.sock.setblocking(True)
-            except socket.error as e:
-                logging.error(f"Socket error: {e}")
-                return False
-            return len(data) > 0
-        return False
-        #     self.sock.setblocking(False)
-        #     data = self.sock.recv(16, socket.MSG_PEEK)
-        #     self.sock.setblocking(True)
-        #     if len(data) == 0:
-        #         return False
-        #     else:
-        #         return True
-        # else:
+        # try:
+        #     ready_to_read, _, _ = select.select([self.sock], [], [], 0)
+        # except select.error as e:
+        #     logging.error(f"Select error: {e}")
         #     return False
+        #
+        # if ready_to_read:
+        #     try:
+        #         self.sock.setblocking(False)
+        #         data = self.sock.recv(16, socket.MSG_PEEK)
+        #         self.sock.setblocking(True)
+        #     except socket.error as e:
+        #         logging.error(f"Socket error: {e}")
+        #         return False
+        #     return len(data) > 0
+        # return False
 
     def update_json(self, data):
         self.update_state = False
@@ -325,24 +347,16 @@ class Vacuum:
         message = message.encode()
         last_time = time.time()
         while self.sock and self.client:
-            retry_times = 0
-            while not self.is_socket_connected():
-                if retry_times == self.connect_retry_times:
-                    break
-                retry_times += 1
-                logging.info(f"Connection closed, retry time = {retry_times}.")
-                self.socket_connect()
-
-            if retry_times == self.connect_retry_times:  # retry to limit, exit
-                self.scheduled_report_ready = False
-                break
             # todo: may need add mqtt retry here
-
             try:
-                self.sock.send(message)  # to plc or to robot //plc=192.168.3.250
-                logging.info("Command sent.")
+                if self.socket_send(message):
+                    logging.info("Command sent.")
+                # self.sock.send(message)  # to plc or to robot //plc=192.168.3.250
+                else:
+                    logging.error("Failed to send command.")
+                    return
             except Exception as e:
-                logging.error(f"Failed to send command: {e}")
+                logging.error(f"Failed to send command: {e}.")
                 return
 
             data = None
@@ -381,6 +395,25 @@ class Vacuum:
                 time.sleep(1)
             last_time = time.time()
         logging.info("Thread end.")
+
+    def socket_send(self, message) -> bool:
+        if not self.sock:
+            logging.error("Socket client not exist.")
+            return False
+        retry_times = 0
+        if not self.is_socket_connected():
+            logging.info(f"Connection closed, will start retry.")
+            if not self.socket_connect():
+                logging.error("Send fail, socket can not connect.")
+                return False
+
+        try:
+            self.sock.sendall(message)  # to plc or to robot //plc=192.168.3.250
+            logging.info("Command sent.")
+            return True
+        except Exception as e:
+            logging.error(f"Failed to send command: {e}")
+            return False
 
 
 class PlatformInfo:
@@ -482,9 +515,11 @@ if __name__ == '__main__':
     if new.init_success:
         if new.socket_connect():
             if new.mqtt_connect():
-                new.start()
-                new_thread = threading.Thread(target=new.scheduled_report())
-                new_thread.setDaemon(True)
-                new_thread.start()
+                # new.start()
+                # new_thread = threading.Thread(target=new.scheduled_report())
+                # new_thread.setDaemon(True)
+                # new_thread.start()
                 while new.scheduled_report_ready:
                     pass
+
+
