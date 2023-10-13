@@ -519,6 +519,7 @@ if __name__ == '__main__':
                 # new_thread = threading.Thread(target=new.scheduled_report())
                 # new_thread.setDaemon(True)
                 # new_thread.start()
+                # pass
                 while new.scheduled_report_ready:
                     pass
 
