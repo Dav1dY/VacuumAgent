@@ -180,7 +180,7 @@ class Vacuum:
             message = "00000,CHECK_ANALOG#"  # todo: change to check analog cmd, and move to para-init
             message = message.encode()
             if self.sock:
-                ready_to_write = select.select([], [self.sock], [], self.socket_timeout)
+                ready_to_write, _, _ = select.select([], [self.sock], [], self.socket_timeout)
                 # send command
                 if ready_to_write[0]:
                     try:
@@ -195,7 +195,7 @@ class Vacuum:
                     logging.error("Socket unable to write, timeout.")
                     return
 
-                ready_to_write = select.select([self.sock], [], [], self.socket_timeout)
+                ready_to_write, _, _ = select.select([self.sock], [], [], self.socket_timeout)
                 data = None
                 try:
                     if ready_to_write[0]:
