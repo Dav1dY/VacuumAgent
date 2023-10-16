@@ -104,7 +104,8 @@ class Vacuum:
         if not self.socket_init():
             return
         if not self.socket_connect():
-            return
+            pass
+            # return
         # todo: may need to keep alive
 
         # init mqtt
@@ -149,6 +150,7 @@ class Vacuum:
             return False
 
         (subscribe_result, mid) = self.client.subscribe("/Devices/adc_agent/QueryConfig")
+        self.client.subscribe("/Test")
         # self.client.subscribe("")   add more topics
         if subscribe_result == 0:
             logging.info("subscribe success.")
@@ -175,8 +177,8 @@ class Vacuum:
                     logging.error(f"Failed to publish message: {e}.")
             else:
                 logging.error("Mqtt client not exist.")
-        elif message.topic == '' or message.topic == '':  # suck or release
-            message = "CHECK_ANALOG"  # todo: change to check analog cmd
+        elif message.topic == '/Test' or message.topic == '/Try':  # suck or release
+            message = "00000,CHECK_ANALOG#"  # todo: change to check analog cmd
             message = message.encode()
             if self.sock:
                 try:
@@ -198,7 +200,7 @@ class Vacuum:
                         logging.error("Receive operation timed out.")
                 except Exception as e:
                     logging.error(f"Failed to receive analog: {e}")
-
+                print(data)
                 self.update_json(data)  # update json
 
                 if self.update_state:
@@ -354,10 +356,10 @@ class Vacuum:
                 # self.sock.send(message)  # to plc or to robot //plc=192.168.3.250
                 else:
                     logging.error("Failed to send command.")
-                    return
+                    break
             except Exception as e:
                 logging.error(f"Failed to send command: {e}.")
-                return
+                break
 
             data = None
             try:
@@ -395,6 +397,7 @@ class Vacuum:
                 time.sleep(1)
             last_time = time.time()
         logging.info("Thread end.")
+        self.scheduled_report_ready = False
 
     def socket_send(self, message) -> bool:
         if not self.sock:
@@ -409,7 +412,6 @@ class Vacuum:
 
         try:
             self.sock.sendall(message)  # to plc or to robot //plc=192.168.3.250
-            logging.info("Command sent.")
             return True
         except Exception as e:
             logging.error(f"Failed to send command: {e}")
@@ -513,14 +515,11 @@ class PlatformInfo:
 if __name__ == '__main__':
     new = Vacuum("insider_transfer_DVI_1", "vacuum_1")
     if new.init_success:
-        if new.socket_connect():
-            if new.mqtt_connect():
-                # new.start()
-                # new_thread = threading.Thread(target=new.scheduled_report())
-                # new_thread.setDaemon(True)
-                # new_thread.start()
-                # pass
-                while new.scheduled_report_ready:
-                    pass
+        new.start()
+        new_thread = threading.Thread(target=new.scheduled_report())
+        new_thread.setDaemon(True)
+        new_thread.start()
+        while new.scheduled_report_ready:
+            pass
 
 
