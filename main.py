@@ -57,6 +57,7 @@ class Vacuum:
             self.sock = None
             self.client = None
             self.scheduled_report_ready = False
+            self.scheduled_report_thread = None
         except Exception:
             logging.error("Initialize parameters fail.")
             return
@@ -103,9 +104,8 @@ class Vacuum:
         # init socket client
         if not self.socket_init():
             return
-        if not self.socket_connect():
-            pass
-            # return
+        if not self.socket_connect_with_retry():
+            return
         # todo: may need to keep alive
 
         # init mqtt
@@ -114,6 +114,7 @@ class Vacuum:
         if not self.mqtt_connect():
             return
 
+        self.start_scheduled_init()
         self.scheduled_report_ready = True
         self.init_success = True
 
@@ -124,7 +125,7 @@ class Vacuum:
         else:
             logging.error("Mqtt client not exist.")
 
-    def socket_connect(self) -> bool:
+    def socket_connect_with_retry(self) -> bool:
         retry_times = 0
         while retry_times < self.connect_retry_times:
             if not self.sock:
@@ -181,28 +182,38 @@ class Vacuum:
             message = "00000,CHECK_ANALOG#"  # todo: change to check analog cmd
             message = message.encode()
             if self.sock:
-                try:
-                    if self.socket_send(message):
-                        logging.info("Command sent.")
-                    else:
-                        logging.error("Failed to send command.")
-                except Exception as e:
-                    logging.error(f"Failed to send command: {e}")
+                # send cmd
+                _, ready_to_write, _ = select.select([], [self.sock], [], self.socket_timeout)
+                if ready_to_write[0]:
+                    try:
+                        if self.socket_send(message):
+                            logging.info("Command sent.")
+                        else:
+                            logging.error("Failed to send command.")
+                    except Exception as e:
+                        logging.error(f"Failed to send command: {e}")
+                        return
+                else:
+                    logging.error("Socket unable to write, timeout.")
                     return
+                # time.sleep(0.5)
 
+                # recv reply
+                ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
                 data = None
-                try:
-                    ready = select.select([self.sock], [], [], self.socket_timeout)
-                    if ready[0]:
+                if ready_to_read[0]:
+                    try:
                         data = self.sock.recv(1024)
                         logging.info("Reply received.")
-                    else:
-                        logging.error("Receive operation timed out.")
-                except Exception as e:
-                    logging.error(f"Failed to receive analog: {e}")
-                print(data)
-                self.update_json(data)  # update json
+                    except Exception as e:
+                        logging.error(f"Failed to receive analog: {e}")
+                        return
+                else:
+                    logging.error("Socket unable to read, timeout.")
+                    return
 
+                # handle data
+                self.update_json(data)
                 if self.update_state:
                     try:
                         with open('Analog.json', 'r') as f:
@@ -306,13 +317,16 @@ class Vacuum:
                 return
 
             try:
-                match = re.search('UPDATE_ANALOG,(\\d+)', data)
+                match = re.search(',REPORT_ANALOG,\s*(\d+)'
+                                  '', data)
                 if match:
                     data = int(match.group(1))
                 else:
+                    print("1")
                     logging.error("Receive bad message.")
                     return
             except ValueError:
+                print("2")
                 logging.error("Receive bad message.")
                 return
         else:
@@ -345,33 +359,51 @@ class Vacuum:
 
     def scheduled_report(self):
         logging.info("Thread start.")
-        message = "CHECK_ANALOG"  # todo: change to check analog cmd
+        message = "00000,QUERY_ANALOG#"  # todo: change to check analog cmd
         message = message.encode()
         last_time = time.time()
         while self.sock and self.client:
             # todo: may need add mqtt retry here
-            try:
-                if self.socket_send(message):
-                    logging.info("Command sent.")
-                # self.sock.send(message)  # to plc or to robot //plc=192.168.3.250
-                else:
-                    logging.error("Failed to send command.")
-                    break
-            except Exception as e:
-                logging.error(f"Failed to send command: {e}.")
-                break
 
+            while time.time()-last_time <= self.report_interval:
+                time.sleep(1)
+            last_time = time.time()
+
+            # send cmd
+            _, ready_to_write, _ = select.select([], [self.sock], [], self.socket_timeout)
+            if ready_to_write:
+                try:
+                    if self.socket_send(message):
+                        logging.info("Command sent.")
+                    else:
+                        logging.error("Failed to send command.")
+                except Exception as e:
+                    logging.error(f"Failed to send command: {e}")
+                    continue
+                    # break
+            else:
+                logging.error("Socket unable to write, timeout.")
+                continue
+                # break
+            time.sleep(0.5)
+
+            # recv reply
+            ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
             data = None
-            try:
-                ready = select.select([self.sock], [], [], self.socket_timeout)
-                if ready[0]:
+            if ready_to_read:
+                try:
                     data = self.sock.recv(1024)
                     logging.info("Reply received.")
-                else:
-                    logging.error("Receive operation timed out.")
-            except Exception as e:
-                logging.error(f"Failed to receive analog: {e}")
+                except Exception as e:
+                    logging.error(f"Failed to receive analog: {e}")
+                    continue
+                    # break
+            else:
+                logging.error("Socket unable to read, timeout.")
+                continue
+                # break
 
+            logging.info(f"DATA = {data}.")
             self.update_json(data)  # update json
 
             if self.update_state:
@@ -393,9 +425,6 @@ class Vacuum:
                 except Exception as e:
                     logging.error(f"An unexpected error occurred: {e}")
 
-            while time.time()-last_time <= self.report_interval:
-                time.sleep(1)
-            last_time = time.time()
         logging.info("Thread end.")
         self.scheduled_report_ready = False
 
@@ -403,19 +432,37 @@ class Vacuum:
         if not self.sock:
             logging.error("Socket client not exist.")
             return False
-        retry_times = 0
-        if not self.is_socket_connected():
-            logging.info(f"Connection closed, will start retry.")
-            if not self.socket_connect():
-                logging.error("Send fail, socket can not connect.")
-                return False
 
-        try:
-            self.sock.sendall(message)  # to plc or to robot //plc=192.168.3.250
-            return True
-        except Exception as e:
-            logging.error(f"Failed to send command: {e}")
-            return False
+        for reconnect_retry_times in range(self.connect_retry_times):
+            for send_retry_times in range(self.connect_retry_times):
+                try:
+                    self.sock.sendall(message)
+                    return True
+                except socket.error as e:
+                    logging.error(f"Socket error: {e}, try {send_retry_times} times.")
+                    time.sleep(1)
+                except Exception as e:
+                    logging.error(f"Failed to send command: {e}, try {send_retry_times} times.")
+                    time.sleep(1)
+            logging.error(f"Retry {self.connect_retry_times} times.")
+            self.sock.close()
+            self.connect_to_target()
+        logging.error(f"Reconnect failed {self.connect_retry_times} times, send fail")
+        return False
+
+    def start_scheduled_init(self):
+        if self.scheduled_report_thread is not None:
+            logging.error("Scheduled report already started.")
+            return
+        self.scheduled_report_thread = threading.Thread(target=self.scheduled_report())
+        self.scheduled_report_thread.setDaemon
+
+    def start_scheduled_report(self):
+        if self.scheduled_report_thread.is_alive():
+            logging.error("Report thread is already on.")
+            return
+        logging.info("Starting scheduled report.")
+        self.scheduled_report_thread.start()
 
 
 class PlatformInfo:
@@ -516,10 +563,15 @@ if __name__ == '__main__':
     new = Vacuum("insider_transfer_DVI_1", "vacuum_1")
     if new.init_success:
         new.start()
-        new_thread = threading.Thread(target=new.scheduled_report())
-        new_thread.setDaemon(True)
-        new_thread.start()
+        new.start_scheduled_report()
         while new.scheduled_report_ready:
             pass
+    # data = b'00000,REPORT_ANALOG,     1##'
+    # data = data.decode('utf-8')
+    # match = re.search('REPORT_ANALOG,\s+\d+', data)
+    # if match:
+    #     print("ok")
+    # else:
+    #     print("xx")
 
 
