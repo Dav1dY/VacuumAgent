@@ -8,12 +8,13 @@ import threading
 import select
 
 class Vacuum:
-    def __init__(self, maincomponent_id, subcomponent, broker="localhost", port=1883):
+    def __init__(self, maincomponent_id, subcomponent):
         self.init_success = False
         logging.basicConfig(filename='vacuum.log', level=logging.INFO, format='%(asctime)s %(message)s')
         logging.info("Initializing")
 
         # load config file
+        self.loaded_data = None
         # noinspection PyBroadException
         try:
             with open("vacuum_config.json", 'r') as f:
@@ -32,20 +33,11 @@ class Vacuum:
         # init parameters
         # noinspection PyBroadException
         try:
-            self.broker = broker
-            self.port = port
             self.config_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Config"
             self.query_config_topic = "/Devices/adc_agent/QueryConfig"
             self.analog_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Analog"
             self.last_time = int(time.time())
             self.current_time = 0
-            self.target_address = self.loaded_data.get('target_address', "10.0.1.202")
-            self.start_port = int(self.loaded_data.get('start_port', "4096"))
-            self.end_port = int(self.loaded_data.get('end_port', "4101"))
-            self.config_path = self.loaded_data.get('config_path', "Config.json")
-            self.report_interval = int(self.loaded_data.get('report_interval', "5"))
-            self.connect_retry_times = int(self.loaded_data.get('connect_retry_times', "3"))
-            self.socket_timeout = int(self.loaded_data.get('socket_timeout', "3"))
             self.port_in_use = 0
             self.connection_state = False
             self.update_state = False
@@ -53,6 +45,26 @@ class Vacuum:
             self.client = None
             self.scheduled_report_ready = False
             self.scheduled_report_thread = None
+            if self.loaded_data is not None:
+                self.broker = self.loaded_data.get('broker', "10.0.1.200")
+                self.port = int(self.loaded_data.get('broker_port', "1883"))
+                self.target_address = self.loaded_data.get('target_address', "10.0.1.202")
+                self.start_port = int(self.loaded_data.get('start_port', "4096"))
+                self.end_port = int(self.loaded_data.get('end_port', "4101"))
+                self.config_path = self.loaded_data.get('config_path', "Config.json")
+                self.report_interval = int(self.loaded_data.get('report_interval', "5"))
+                self.connect_retry_times = int(self.loaded_data.get('connect_retry_times', "3"))
+                self.socket_timeout = int(self.loaded_data.get('socket_timeout', "3"))
+            else:
+                self.broker = "10.0.1.200"
+                self.port = 1883
+                self.target_address = "10.0.1.202"
+                self.start_port = 4096
+                self.end_port = 4101
+                self.config_path = "Config.json"
+                self.report_interval = 5
+                self.connect_retry_times = 3
+                self.socket_timeout = 3
         except Exception:
             logging.error("Initialize parameters fail.")
             return
@@ -115,7 +127,6 @@ class Vacuum:
             self.sock = None
         logging.error("Socket connect fail.")
         return False
-    # todo: may add retry here or outside
 
     def mqtt_client_init(self) -> bool:
         try:
@@ -139,12 +150,17 @@ class Vacuum:
         return True
 
     def mqtt_connect(self) -> bool:
-        try:
-            self.client.connect("localhost", 1883, 60)
-            logging.info("Connect to broker success.")
-        except Exception as e:
-            logging.error(f"Failed to connect to the broker: {e}.")
-            return False
+        retry_times = 0
+        while retry_times < self.connect_retry_times:
+            retry_times += 1
+            try:
+                self.client.connect("localhost", 1883, 60)
+                logging.info("Connect to broker success.")
+                break
+            except Exception as e:
+                logging.error(f"Failed to connect to the broker: {e}.")
+                if retry_times == self.connect_retry_times:
+                    return False
 
         (subscribe_result, mid) = self.client.subscribe("/Devices/adc_agent/QueryConfig")
         self.client.subscribe("/Test")
@@ -155,7 +171,6 @@ class Vacuum:
             logging.error(f"Failed to subscribe. Result code: {subscribe_result}")
             return False
         return True
-    # todo: may add retry here or outside
 
     def start_scheduled_init(self):
         if self.scheduled_report_thread is not None:

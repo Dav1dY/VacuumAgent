@@ -203,7 +203,7 @@ class SystemInfo:
     def scheduled_report_init(self):
         if self.scheduled_report_thread is not None:
             logging.error("Scheduled report already initialized.")
-            # todo: delete and re-init may be better
+            self.scheduled_report_thread.setDaemon(True)
             return
         self.scheduled_report_thread = threading.Thread(target=self.scheduled_report)
         self.scheduled_report_thread.setDaemon(True)
