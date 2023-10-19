@@ -11,7 +11,7 @@ import psutil
 class SystemInfo:
     def __init__(self, maincomponent_id, subcomponent):
         self.init_success = False
-        logging.basicConfig(filename='platform.log', level=logging.INFO, format='%(asctime)s %(message)s')
+        logging.basicConfig(filename='SystemInfo.log', level=logging.INFO, format='%(asctime)s %(message)s')
         logging.info("Initializing.")
 
         # load config file
@@ -81,11 +81,12 @@ class SystemInfo:
             return
 
         # init json data
-        self.create_json(['Platform', 'Model', 'CPU_Usage', 'RAM_Usage', 'Disk_Usage'], [self.system,
-                                                                                         self.pc_model,
-                                                                                         self.cpu_usage,
-                                                                                         self.ram_usage,
-                                                                                         self.disk_usage])
+        self.create_json(['platform', 'model', 'cpu_usage', 'ram_usage', 'disk_usage', 'timestamp'], [self.system,
+                                                                                                      self.pc_model,
+                                                                                                      self.cpu_usage,
+                                                                                                      self.ram_usage,
+                                                                                                      self.disk_usage,
+                                                                                                      int(time.time())])
         if self.json_data is None:
             logging.error("Json data initialization failed.")
             return

@@ -7,10 +7,12 @@ import re
 import threading
 import select
 
+
 class Vacuum:
     def __init__(self, maincomponent_id, subcomponent):
         self.init_success = False
         logging.basicConfig(filename='vacuum.log', level=logging.INFO, format='%(asctime)s %(message)s')
+        logging.info("*******************************")
         logging.info("Initializing")
 
         # load config file
@@ -258,7 +260,7 @@ class Vacuum:
             try:
                 logging.info(f"Starting to connecting to {self.target_address}:{p}.")
                 self.sock.connect((self.target_address, p))
-                # todo: figure out why takes 20s here
+                # todo: takes 20s when fail, can modify timeout
                 self.port_in_use = p
                 break
             except socket.error:
@@ -277,22 +279,6 @@ class Vacuum:
             return True
         except socket.error:
             return False
-        # try:
-        #     ready_to_read, _, _ = select.select([self.sock], [], [], 0)
-        # except select.error as e:
-        #     logging.error(f"Select error: {e}")
-        #     return False
-        #
-        # if ready_to_read:
-        #     try:
-        #         self.sock.setblocking(False)
-        #         data = self.sock.recv(16, socket.MSG_PEEK)
-        #         self.sock.setblocking(True)
-        #     except socket.error as e:
-        #         logging.error(f"Socket error: {e}")
-        #         return False
-        #     return len(data) > 0
-        # return False
 
     def update_json(self, data):
         self.update_state = False
@@ -303,20 +289,18 @@ class Vacuum:
             except UnicodeDecodeError as e:
                 logging.error(f"Failed to decode message: {e}.")
                 return
-
             try:
-                match = re.search(',REPORT_ANALOG,\s*(\d+)'
-                                  '', data)
+                match = re.search(',REPORT_ANALOG,(\\s*)(\\d+)', data)
                 if match:
-                    data = int(match.group(1))
+                    data = int(match.group(2))
                 else:
-                    logging.error("Receive bad message.")
+                    logging.error("Receive bad message1.")
                     return
             except ValueError:
-                logging.error("Receive bad message.")
+                logging.error("Receive bad message2.")
                 return
         else:
-            # case that socket receive timeout and have no data send back
+            # case that socket receives timeout and have no data send back
             data = 0
 
         self.current_time = int(time.time())
@@ -456,6 +440,7 @@ if __name__ == '__main__':
     new = Vacuum("insider_transfer_DVI_1", "vacuum_1")
     if new.init_success:
         new.start()
+
 
 
 
