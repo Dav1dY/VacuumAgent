@@ -1,16 +1,11 @@
-
 import paho.mqtt.client as mqtt
 import json
 import socket
 import time
 import logging
-# import psutil
-import platform
-import subprocess
 import re
 import threading
 import select
-
 
 class Vacuum:
     def __init__(self, maincomponent_id, subcomponent, broker="localhost", port=1883):
@@ -44,13 +39,13 @@ class Vacuum:
             self.analog_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Analog"
             self.last_time = int(time.time())
             self.current_time = 0
-            self.target_address = self.loaded_data.get('target_address', None)  # default:"192.168.3.250"
-            self.start_port = int(self.loaded_data.get('start_port', None))
-            self.end_port = int(self.loaded_data.get('end_port', None))
-            self.config_path = self.loaded_data.get('config_path', None)
-            self.report_interval = int(self.loaded_data.get('report_interval', None))
-            self.connect_retry_times = int(self.loaded_data.get('connect_retry_times', None))
-            self.socket_timeout = int(self.loaded_data.get('socket_timeout', None))
+            self.target_address = self.loaded_data.get('target_address', "10.0.1.202")
+            self.start_port = int(self.loaded_data.get('start_port', "4096"))
+            self.end_port = int(self.loaded_data.get('end_port', "4101"))
+            self.config_path = self.loaded_data.get('config_path', "Config.json")
+            self.report_interval = int(self.loaded_data.get('report_interval', "5"))
+            self.connect_retry_times = int(self.loaded_data.get('connect_retry_times', "3"))
+            self.socket_timeout = int(self.loaded_data.get('socket_timeout', "3"))
             self.port_in_use = 0
             self.connection_state = False
             self.update_state = False
@@ -60,27 +55,6 @@ class Vacuum:
             self.scheduled_report_thread = None
         except Exception:
             logging.error("Initialize parameters fail.")
-            return
-        if not self.target_address:
-            logging.error("missing target_address in json")
-            return
-        if not self.start_port:
-            logging.error("missing start_port in json")
-            return
-        if not self.end_port:
-            logging.error("missing end_port in json")
-            return
-        if not self.config_path:
-            logging.error("missing config_path in json")
-            return
-        if not self.report_interval:
-            logging.error("missing report_interval in json")
-            return
-        if not self.connect_retry_times:
-            logging.error("missing connect_retry_times in json")
-            return
-        if not self.socket_timeout:
-            logging.error("missing socket_timeout in json")
             return
         logging.info("All parameters loaded success.")
 
@@ -118,12 +92,13 @@ class Vacuum:
         self.scheduled_report_ready = True
         self.init_success = True
 
-    def start(self):
-        if self.client:
-            self.client.loop_start()
-            logging.info("Mqtt loop started.")
-        else:
-            logging.error("Mqtt client not exist.")
+    def socket_init(self) -> bool:
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            return True
+        except socket.error as e:
+            logging.error(f"Failed to create a socket. Error: {e}")
+            return False
 
     def socket_connect_with_retry(self) -> bool:
         retry_times = 0
@@ -141,6 +116,27 @@ class Vacuum:
         logging.error("Socket connect fail.")
         return False
     # todo: may add retry here or outside
+
+    def mqtt_client_init(self) -> bool:
+        try:
+            self.client = mqtt.Client(self.broker, self.port)
+            logging.info("mqtt client established.")
+        except Exception as e:
+            logging.error(f"Failed to establish mqtt client: {e}")
+            return False
+        try:
+            self.client.on_message = self.on_message
+            logging.info("Message callback registered.")
+        except Exception as e:
+            logging.error(f"Failed to register message callback: {e}")
+            return False
+        try:
+            self.client.on_connect = self.on_connect
+            logging.info("Connect callback registered.")
+        except Exception as e:
+            logging.error(f"Failed to register connect callback: {e}")
+            return False
+        return True
 
     def mqtt_connect(self) -> bool:
         try:
@@ -160,6 +156,13 @@ class Vacuum:
             return False
         return True
     # todo: may add retry here or outside
+
+    def start_scheduled_init(self):
+        if self.scheduled_report_thread is not None:
+            logging.error("Scheduled report already started.")
+            return
+        self.scheduled_report_thread = threading.Thread(target=self.scheduled_report)
+        self.scheduled_report_thread.setDaemon(True)
 
     @staticmethod
     def on_connect(client, userdata, flags, rc):
@@ -196,7 +199,6 @@ class Vacuum:
                 else:
                     logging.error("Socket unable to write, timeout.")
                     return
-                # time.sleep(0.5)
 
                 # recv reply
                 ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
@@ -232,35 +234,6 @@ class Vacuum:
                         logging.error("An error occurred while decoding the JSON.")
                     except Exception as e:
                         logging.error(f"An unexpected error occurred: {e}")
-
-    def socket_init(self) -> bool:
-        try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            return True
-        except socket.error as e:
-            logging.error(f"Failed to create a socket. Error: {e}")
-            return False
-
-    def mqtt_client_init(self) -> bool:
-        try:
-            self.client = mqtt.Client(self.broker, self.port)
-            logging.info("mqtt client established.")
-        except Exception as e:
-            logging.error(f"Failed to establish mqtt client: {e}")
-            return False
-        try:
-            self.client.on_message = self.on_message
-            logging.info("Message callback registered.")
-        except Exception as e:
-            logging.error(f"Failed to register message callback: {e}")
-            return False
-        try:
-            self.client.on_connect = self.on_connect
-            logging.info("Connect callback registered.")
-        except Exception as e:
-            logging.error(f"Failed to register connect callback: {e}")
-            return False
-        return True
 
     def connect_to_target(self) -> bool:
         self.port_in_use = 0
@@ -322,11 +295,9 @@ class Vacuum:
                 if match:
                     data = int(match.group(1))
                 else:
-                    print("1")
                     logging.error("Receive bad message.")
                     return
             except ValueError:
-                print("2")
                 logging.error("Receive bad message.")
                 return
         else:
@@ -362,9 +333,7 @@ class Vacuum:
         message = "00000,QUERY_ANALOG#"  # todo: change to check analog cmd
         message = message.encode()
         last_time = time.time()
-        while self.sock and self.client:
-            # todo: may need add mqtt retry here
-
+        while self.scheduled_report_ready and self.sock and self.client:
             while time.time()-last_time <= self.report_interval:
                 time.sleep(1)
             last_time = time.time()
@@ -380,12 +349,10 @@ class Vacuum:
                 except Exception as e:
                     logging.error(f"Failed to send command: {e}")
                     continue
-                    # break
             else:
                 logging.error("Socket unable to write, timeout.")
                 continue
-                # break
-            time.sleep(0.5)
+            time.sleep(0.1)
 
             # recv reply
             ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
@@ -450,128 +417,30 @@ class Vacuum:
         logging.error(f"Reconnect failed {self.connect_retry_times} times, send fail")
         return False
 
-    def start_scheduled_init(self):
-        if self.scheduled_report_thread is not None:
-            logging.error("Scheduled report already started.")
-            return
-        self.scheduled_report_thread = threading.Thread(target=self.scheduled_report())
-        self.scheduled_report_thread.setDaemon
-
     def start_scheduled_report(self):
         if self.scheduled_report_thread.is_alive():
             logging.error("Report thread is already on.")
             return
         logging.info("Starting scheduled report.")
+        self.scheduled_report_ready = True
         self.scheduled_report_thread.start()
+        logging.info("Scheduled report start.")
 
-
-class PlatformInfo:
-    def __init__(self, maincomponent_id, subcomponent, broker="localhost", port=1883):
-        self.init_success = False
-        logging.basicConfig(filename='platform.log', level=logging.INFO, format='%(asctime)s %(message)s')
-        logging.info("Initializing")
-        self.system = platform.system()
-        self.cpu_usage = 0
-        self.ram_usage = 0
-        self.disk_usage = 0
-        self.pc_model = "Unknown Model"
-        self.json_data = None
-        self.interval = 3
-        logging.info(f"System is {self.system}")
-        if self.system == 'Windows':
-            # noinspection PyBroadException
-            try:
-                self.pc_model = subprocess.check_output('wmic csproduct get name', shell=True).decode().split('\n')[1]\
-                    .strip()
-            except Exception:
-                self.pc_model = "Unknown Model"
-        elif self.system == 'Linux':
-            # noinspection PyBroadException
-            try:
-                self.pc_model = subprocess.check_output('sudo dmidecode -s system-product-name', shell=True).decode().\
-                    strip()
-            except Exception:
-                self.pc_model = "Unknown Model"
-        elif self.system == "Darwin":
-            # noinspection PyBroadException
-            try:
-                result = subprocess.run(['system_profiler', 'SPHardwareDataType'], capture_output=True, text=True)
-                lines = result.stdout.split('\n')
-                for line in lines:
-                    if "Model Name" in line:
-                        self.pc_model = line.split(":")[1].strip()
-            except Exception:
-                self.pc_model = "Unknown Model"
+    def start(self):
+        if self.client:
+            self.client.loop_start()
+            logging.info("Mqtt loop started.")
+            self.start_scheduled_report()
         else:
-            self.pc_model = "Unknown System"
-        logging.info(f"pc model is {self.pc_model}")
-        self.create_json(['Platform', 'Model', 'CPU_Usage', 'RAM_Usage', 'Disk_Usage'], [self.system,
-                                                                                         self.pc_model,
-                                                                                         self.cpu_usage,
-                                                                                         self.ram_usage,
-                                                                                         self.disk_usage])
-        self.client = mqtt.Client(broker, port)
-        logging.info("mqtt client established.")
-        self.client.on_message = self.on_message
-        self.client.on_connect = self.on_connect
-        # noinspection PyBroadException
-        try:
-            self.client.connect("localhost", 1883, 60)
-        except Exception as e:
-            logging.error(f"Failed to connect to the broker:{e}.")
-            return
-        (result, mid) = self.client.subscribe('/topic/QueryUsage')
-        if result == mqtt.MQTT_ERR_SUCCESS:
-            logging.info("Subscribe successfully.")
-        elif result == mqtt.MQTT_ERR_NO_CONN:
-            logging.error(f"Subscription failed, no connection.")
-            return
-        else:
-            logging.error(f"Subscription failed, error code {result}")
-            return
-        self.client.loop_start()
-        logging.info("Loop started.")
-        self.init_success = True
-
-    def update_info(self):
-        # self.cpu_usage = psutil.cpu_percent(interval=1)
-        # self.ram_usage = psutil.virtual_memory().percent
-        # self.disk_usage = psutil.disk_usage('/').percent
-        self.json_data['CPU_Usage'] = self.cpu_usage
-        self.json_data['RAM_Usage'] = self.ram_usage
-        self.json_data['Disk_Usage'] = self.disk_usage
-        json_data = json.dumps(self.json_data)
-        self.client.publish("/topic/ReportUsage", json_data)
-
-    def create_json(self, index, value):
-        data_dict = dict(zip(index, value))
-        self.json_data = data_dict
-
-    def on_message(self, client, userdata, message):
-        if message.topic == 'topic/QueryUsage':
-            self.update_info()
-
-    def on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
-            logging.info("Connected successfully.")
-        else:
-            logging.error(f"Connection failed with error code {rc}.")
-            return
+            logging.error("Mqtt client not exist.")
+        while self.scheduled_report_ready:
+            pass
 
 
 if __name__ == '__main__':
     new = Vacuum("insider_transfer_DVI_1", "vacuum_1")
     if new.init_success:
         new.start()
-        new.start_scheduled_report()
-        while new.scheduled_report_ready:
-            pass
-    # data = b'00000,REPORT_ANALOG,     1##'
-    # data = data.decode('utf-8')
-    # match = re.search('REPORT_ANALOG,\s+\d+', data)
-    # if match:
-    #     print("ok")
-    # else:
-    #     print("xx")
+
 
 
