@@ -180,7 +180,7 @@ class Vacuum:
             message = "00000,CHECK_ANALOG#"  # todo: change to check analog cmd, and move to para-init
             message = message.encode()
             if self.sock:
-                ready_to_write, _, _ = select.select([], [self.sock], [], self.socket_timeout)
+                _, ready_to_write, _ = select.select([], [self.sock], [], self.socket_timeout)
                 # send command
                 if ready_to_write[0]:
                     try:
@@ -283,22 +283,6 @@ class Vacuum:
             return True
         except socket.error:
             return False
-        # try:
-        #     ready_to_read, _, _ = select.select([self.sock], [], [], 0)
-        # except select.error as e:
-        #     logging.error(f"Select error: {e}")
-        #     return False
-        #
-        # if ready_to_read:
-        #     try:
-        #         self.sock.setblocking(False)
-        #         data = self.sock.recv(16, socket.MSG_PEEK)
-        #         self.sock.setblocking(True)
-        #     except socket.error as e:
-        #         logging.error(f"Socket error: {e}")
-        #         return False
-        #     return len(data) > 0
-        # return False
 
     def update_json(self, data):
         self.update_state = False
@@ -353,8 +337,14 @@ class Vacuum:
         message = "CHECK_ANALOG"  # todo: change to check analog cmd
         message = message.encode()
         last_time = time.time()
+
         while self.sock and self.client:
             # todo: may need add mqtt retry here
+
+            while time.time()-last_time <= self.report_interval:
+                time.sleep(1)
+            last_time = time.time()
+
             try:
                 if self.socket_send(message):
                     logging.info("Command sent.")
@@ -408,6 +398,7 @@ class Vacuum:
         if not self.sock:
             logging.error("Socket client not exist.")
             return False
+
         for reconnect_retry_times in range(self.connect_retry_times):
             for send_retry_times in range(self.connect_retry_times):
                 try:
@@ -420,7 +411,7 @@ class Vacuum:
                 except Exception as e:
                     logging.error(f"Failed to send command: {e}, try {send_retry_times} times.")
                     time.sleep(1)
-            logging.error(f"Retry {self.reconnect_retry_times} times.")
+            logging.error(f"Retry {self.connect_retry_times} times.")
             self.sock.close()
             self.connect_to_target()
         logging.error(f"Reconnect failed {self.connect_retry_times} times, send fail.")
@@ -522,11 +513,21 @@ class PlatformInfo:
 
 
 if __name__ == '__main__':
-    new = Vacuum("insider_transfer_DVI_1", "vacuum_1")
-    if new.init_success:
-        # new.start()
-        # new_thread = threading.Thread(target=new.scheduled_report())
-        # new_thread.setDaemon(True)
-        # new_thread.start()
-        while new.scheduled_report_ready:
-            pass
+    # new = Vacuum("insider_transfer_DVI_1", "vacuum_1")
+    # if new.init_success:
+    #     new.start()
+    #     new_thread = threading.Thread(target=new.scheduled_report())
+    #     new_thread.setDaemon(True)
+    #     new_thread.start()
+    #     while new.scheduled_report_ready:
+    #         pass
+    loaded = None
+    try:
+        with open("123.json", 'r') as f:
+            loaded = json.load(f)
+    except Exception:
+        print("error")
+    if loaded:
+        print("true")
+    else:
+        print("false")
