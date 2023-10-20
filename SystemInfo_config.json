@@ -1,14 +1,9 @@
 {
-    "target": "plc",
-    "using_socket": "True",
     "broker": "10.0.1.200",
     "broker_port": "1883",
-    "target_address": "10.0.1.202",
-    "start_port": "4096",
-    "end_port": "4101",
     "config_path": "Config.json",
     "report_interval": "5",
     "connect_retry_times": "3",
-    "socket_timeout": "3",
+    "publish_fail_tolerance": "5",
     "query_config_topic": "/Devices/adc_agent/QueryConfig"
 }

@@ -1,24 +1,22 @@
-
 import paho.mqtt.client as mqtt
 import json
 import socket
 import time
 import logging
-# import psutil
-import platform
-import subprocess
 import re
 import threading
 import select
 
 
 class Vacuum:
-    def __init__(self, maincomponent_id, subcomponent, broker="localhost", port=1883):
+    def __init__(self, maincomponent_id, subcomponent):
         self.init_success = False
         logging.basicConfig(filename='vacuum.log', level=logging.INFO, format='%(asctime)s %(message)s')
+        logging.info("*******************************")
         logging.info("Initializing")
 
         # load config file
+        self.loaded_data = None
         # noinspection PyBroadException
         try:
             with open("vacuum_config.json", 'r') as f:
@@ -37,49 +35,40 @@ class Vacuum:
         # init parameters
         # noinspection PyBroadException
         try:
-            self.broker = broker
-            self.port = port
             self.config_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Config"
             self.query_config_topic = "/Devices/adc_agent/QueryConfig"
             self.analog_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Analog"
             self.last_time = int(time.time())
             self.current_time = 0
-            self.target_address = self.loaded_data.get('target_address', None)  # default:"192.168.3.250"
-            self.start_port = int(self.loaded_data.get('start_port', None))
-            self.end_port = int(self.loaded_data.get('end_port', None))
-            self.config_path = self.loaded_data.get('config_path', None)
-            self.report_interval = int(self.loaded_data.get('report_interval', None))
-            self.connect_retry_times = int(self.loaded_data.get('connect_retry_times', None))
-            self.socket_timeout = int(self.loaded_data.get('socket_timeout', None))
             self.port_in_use = 0
             self.connection_state = False
             self.update_state = False
             self.sock = None
             self.client = None
             self.scheduled_report_ready = False
+            self.scheduled_report_thread = None
+            if self.loaded_data is not None:
+                self.broker = self.loaded_data.get('broker', "10.0.1.200")
+                self.port = int(self.loaded_data.get('broker_port', "1883"))
+                self.target_address = self.loaded_data.get('target_address', "10.0.1.202")
+                self.start_port = int(self.loaded_data.get('start_port', "4096"))
+                self.end_port = int(self.loaded_data.get('end_port', "4101"))
+                self.config_path = self.loaded_data.get('config_path', "Config.json")
+                self.report_interval = int(self.loaded_data.get('report_interval', "5"))
+                self.connect_retry_times = int(self.loaded_data.get('connect_retry_times', "3"))
+                self.socket_timeout = int(self.loaded_data.get('socket_timeout', "3"))
+            else:
+                self.broker = "10.0.1.200"
+                self.port = 1883
+                self.target_address = "10.0.1.202"
+                self.start_port = 4096
+                self.end_port = 4101
+                self.config_path = "Config.json"
+                self.report_interval = 5
+                self.connect_retry_times = 3
+                self.socket_timeout = 3
         except Exception:
             logging.error("Initialize parameters fail.")
-            return
-        if not self.target_address:
-            logging.error("missing target_address in json")
-            return
-        if not self.start_port:
-            logging.error("missing start_port in json")
-            return
-        if not self.end_port:
-            logging.error("missing end_port in json")
-            return
-        if not self.config_path:
-            logging.error("missing config_path in json")
-            return
-        if not self.report_interval:
-            logging.error("missing report_interval in json")
-            return
-        if not self.connect_retry_times:
-            logging.error("missing connect_retry_times in json")
-            return
-        if not self.socket_timeout:
-            logging.error("missing socket_timeout in json")
             return
         logging.info("All parameters loaded success.")
 
@@ -113,15 +102,17 @@ class Vacuum:
         if not self.mqtt_connect():
             return
 
+        self.start_scheduled_init()
         self.scheduled_report_ready = True
         self.init_success = True
 
-    def start(self):
-        if self.client:
-            self.client.loop_start()
-            logging.info("Mqtt loop started.")
-        else:
-            logging.error("Mqtt client not exist.")
+    def socket_init(self) -> bool:
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            return True
+        except socket.error as e:
+            logging.error(f"Failed to create a socket. Error: {e}")
+            return False
 
     def socket_connect_with_retry(self) -> bool:
         retry_times = 0
@@ -138,102 +129,6 @@ class Vacuum:
             self.sock = None
         logging.error("Socket connect fail.")
         return False
-    # todo: may add retry here or outside
-
-    def mqtt_connect(self) -> bool:
-        try:
-            self.client.connect("localhost", 1883, 60)
-            logging.info("Connect to broker success.")
-        except Exception as e:
-            logging.error(f"Failed to connect to the broker: {e}.")
-            return False
-
-        (subscribe_result, mid) = self.client.subscribe("/Devices/adc_agent/QueryConfig")
-        self.client.subscribe("/Test")
-        # self.client.subscribe("")   add more topics
-        if subscribe_result == 0:
-            logging.info("subscribe success.")
-        else:
-            logging.error(f"Failed to subscribe. Result code: {subscribe_result}")
-            return False
-        return True
-    # todo: may add retry here or outside
-
-    @staticmethod
-    def on_connect(client, userdata, flags, rc):
-        if rc == 0:
-            logging.info("Connected successfully.")
-        else:
-            logging.error(f"Connection failed with error code {rc}.")
-
-    def on_message(self, client, userdata, message):
-        if message.topic == '/Devices/adc_agent/QueryConfig':  # query config
-            if self.client:
-                try:
-                    client.publish(self.config_topic, self.config_data)
-                    logging.info("Config message published.")
-                except Exception as e:
-                    logging.error(f"Failed to publish message: {e}.")
-            else:
-                logging.error("Mqtt client not exist.")
-        elif message.topic == '/Test' or message.topic == '/Try':  # suck or release
-            message = "00000,CHECK_ANALOG#"  # todo: change to check analog cmd, and move to para-init
-            message = message.encode()
-            if self.sock:
-                _, ready_to_write, _ = select.select([], [self.sock], [], self.socket_timeout)
-                # send command
-                if ready_to_write[0]:
-                    try:
-                        if self.socket_send(message):
-                            logging.info("Command sent.")
-                        else:
-                            logging.error("Failed to send command.")
-                    except Exception as e:
-                        logging.error(f"Failed to send command: {e}")
-                        return
-                else:
-                    logging.error("Socket unable to write, timeout.")
-                    return
-
-                ready_to_write, _, _ = select.select([self.sock], [], [], self.socket_timeout)
-                data = None
-                try:
-                    if ready_to_write[0]:
-                        data = self.sock.recv(1024)
-                        logging.info("Reply received.")
-                    else:
-                        logging.error("Receive operation timed out.")
-                except Exception as e:
-                    logging.error(f"Failed to receive analog: {e}")
-
-                self.update_json(data)  # update json
-
-                if self.update_state:
-                    try:
-                        with open('Analog.json', 'r') as f:
-                            json_data = json.dumps(json.load(f))
-                            if self.client:
-                                try:
-                                    client.publish(self.analog_topic, json_data)
-                                    logging.info("Analog message published.")
-                                except Exception as e:
-                                    logging.error(f"Failed to publish message: {e}")
-                            else:
-                                logging.error("Mqtt client not exist.")
-                    except FileNotFoundError:
-                        logging.error("The file 'Analog.json' was not found.")
-                    except json.JSONDecodeError:
-                        logging.error("An error occurred while decoding the JSON.")
-                    except Exception as e:
-                        logging.error(f"An unexpected error occurred: {e}")
-
-    def socket_init(self) -> bool:
-        try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            return True
-        except socket.error as e:
-            logging.error(f"Failed to create a socket. Error: {e}")
-            return False
 
     def mqtt_client_init(self) -> bool:
         try:
@@ -256,6 +151,106 @@ class Vacuum:
             return False
         return True
 
+    def mqtt_connect(self) -> bool:
+        retry_times = 0
+        while retry_times < self.connect_retry_times:
+            retry_times += 1
+            try:
+                self.client.connect("localhost", 1883, 60)
+                logging.info("Connect to broker success.")
+                break
+            except Exception as e:
+                logging.error(f"Failed to connect to the broker: {e}.")
+                if retry_times == self.connect_retry_times:
+                    return False
+
+        (subscribe_result, mid) = self.client.subscribe("/Devices/adc_agent/QueryConfig")
+        self.client.subscribe("/Test")
+        # self.client.subscribe("")   add more topics
+        if subscribe_result == 0:
+            logging.info("subscribe success.")
+        else:
+            logging.error(f"Failed to subscribe. Result code: {subscribe_result}")
+            return False
+        return True
+
+    def start_scheduled_init(self):
+        if self.scheduled_report_thread is not None:
+            logging.error("Scheduled report already started.")
+            return
+        self.scheduled_report_thread = threading.Thread(target=self.scheduled_report)
+        self.scheduled_report_thread.setDaemon(True)
+
+    @staticmethod
+    def on_connect(client, userdata, flags, rc):
+        if rc == 0:
+            logging.info("Connected successfully.")
+        else:
+            logging.error(f"Connection failed with error code {rc}.")
+
+    def on_message(self, client, userdata, message):
+        if message.topic == '/Devices/adc_agent/QueryConfig':  # query config
+            if self.client:
+                try:
+                    client.publish(self.config_topic, self.config_data)
+                    logging.info("Config message published.")
+                except Exception as e:
+                    logging.error(f"Failed to publish message: {e}.")
+            else:
+                logging.error("Mqtt client not exist.")
+        elif message.topic == '/Test' or message.topic == '/Try':  # suck or release
+            message = "00000,CHECK_ANALOG#"  # todo: change to check analog cmd
+            message = message.encode()
+            if self.sock:
+                # send cmd
+                _, ready_to_write, _ = select.select([], [self.sock], [], self.socket_timeout)
+                if ready_to_write[0]:
+                    try:
+                        if self.socket_send(message):
+                            logging.info("Command sent.")
+                        else:
+                            logging.error("Failed to send command.")
+                    except Exception as e:
+                        logging.error(f"Failed to send command: {e}")
+                        return
+                else:
+                    logging.error("Socket unable to write, timeout.")
+                    return
+
+                # recv reply
+                ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
+                if ready_to_read[0]:
+                    try:
+                        data = self.sock.recv(1024)
+                        logging.info("Reply received.")
+                    except Exception as e:
+                        logging.error(f"Failed to receive analog: {e}")
+                        return
+                else:
+                    logging.error("Socket unable to read, timeout.")
+                    return
+
+                # handle data
+                self.update_json(data)
+                if self.update_state:
+                    try:
+                        with open('Analog.json', 'r') as f:
+                            json_data = json.dumps(json.load(f))
+                            if self.client:
+                                try:
+                                    client.publish(self.analog_topic, json_data)
+                                    logging.info("Analog message published.")
+                                except Exception as e:
+                                    logging.error(f"Failed to publish message: {e}")
+                            else:
+                                logging.error("Mqtt client not exist.")
+                    except FileNotFoundError:
+                        logging.error("The file 'Analog.json' was not found.")
+                    except json.JSONDecodeError:
+                        logging.error("An error occurred while decoding the JSON.")
+                    except Exception as e:
+                        logging.error(f"An unexpected error occurred: {e}")
+
     def connect_to_target(self) -> bool:
         self.port_in_use = 0
         logging.info("Starting to connecting to plc.")
@@ -264,7 +259,7 @@ class Vacuum:
             try:
                 logging.info(f"Starting to connecting to {self.target_address}:{p}.")
                 self.sock.connect((self.target_address, p))
-                # todo: figure out why takes 20s here
+                # todo: takes 20s when fail, can modify timeout
                 self.port_in_use = p
                 break
             except socket.error:
@@ -293,19 +288,18 @@ class Vacuum:
             except UnicodeDecodeError as e:
                 logging.error(f"Failed to decode message: {e}.")
                 return
-
             try:
-                match = re.search('UPDATE_ANALOG,(\\d+)', data)
+                match = re.search(',REPORT_ANALOG,(\\s*)(\\d+)', data)
                 if match:
-                    data = int(match.group(1))
+                    data = int(match.group(2))
                 else:
-                    logging.error("Receive bad message.")
+                    logging.error("Receive bad message1.")
                     return
             except ValueError:
-                logging.error("Receive bad message.")
+                logging.error("Receive bad message2.")
                 return
         else:
-            # case that socket receive timeout and have no data send back
+            # case that socket receives timeout and have no data send back
             data = 0
 
         self.current_time = int(time.time())
@@ -334,39 +328,47 @@ class Vacuum:
 
     def scheduled_report(self):
         logging.info("Thread start.")
-        message = "CHECK_ANALOG"  # todo: change to check analog cmd
+        message = "00000,QUERY_ANALOG#"  # todo: change to check analog cmd
         message = message.encode()
         last_time = time.time()
 
-        while self.sock and self.client:
-            # todo: may need add mqtt retry here
-
+        while self.scheduled_report_ready and self.sock and self.client:
             while time.time()-last_time <= self.report_interval:
                 time.sleep(1)
             last_time = time.time()
 
-            try:
-                if self.socket_send(message):
-                    logging.info("Command sent.")
-                # self.sock.send(message)  # to plc or to robot //plc=192.168.3.250
-                else:
-                    logging.error("Failed to send command.")
-                    break
-            except Exception as e:
-                logging.error(f"Failed to send command: {e}.")
-                return
+            # send cmd
+            _, ready_to_write, _ = select.select([], [self.sock], [], self.socket_timeout)
+            if ready_to_write:
+                try:
+                    if self.socket_send(message):
+                        logging.info("Command sent.")
+                    else:
+                        logging.error("Failed to send command.")
+                except Exception as e:
+                    logging.error(f"Failed to send command: {e}")
+                    continue
+            else:
+                logging.error("Socket unable to write, timeout.")
+                continue
+            time.sleep(0.1)
 
-            data = None
-            try:
-                ready = select.select([self.sock], [], [], self.socket_timeout)
-                if ready[0]:
+            # recv reply
+            ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
+            if ready_to_read:
+                try:
                     data = self.sock.recv(1024)
                     logging.info("Reply received.")
-                else:
-                    logging.error("Receive operation timed out.")
-            except Exception as e:
-                logging.error(f"Failed to receive analog: {e}")
+                except Exception as e:
+                    logging.error(f"Failed to receive analog: {e}")
+                    continue
+                    # break
+            else:
+                logging.error("Socket unable to read, timeout.")
+                continue
+                # break
 
+            logging.info(f"DATA = {data}.")
             self.update_json(data)  # update json
 
             if self.update_state:
@@ -388,9 +390,6 @@ class Vacuum:
                 except Exception as e:
                     logging.error(f"An unexpected error occurred: {e}")
 
-            while time.time()-last_time <= self.report_interval:
-                time.sleep(1)
-            last_time = time.time()
         logging.info("Thread end.")
         self.scheduled_report_ready = False
 
@@ -403,131 +402,40 @@ class Vacuum:
             for send_retry_times in range(self.connect_retry_times):
                 try:
                     self.sock.sendall(message)
-                    logging.info("Command sent.")
                     return True
                 except socket.error as e:
                     logging.error(f"Socket error: {e}, try {send_retry_times} times.")
-                    time.sleep(1)  # Wait for a while before retrying
+                    time.sleep(1)
                 except Exception as e:
                     logging.error(f"Failed to send command: {e}, try {send_retry_times} times.")
                     time.sleep(1)
             logging.error(f"Retry {self.connect_retry_times} times.")
             self.sock.close()
             self.connect_to_target()
-        logging.error(f"Reconnect failed {self.connect_retry_times} times, send fail.")
+        logging.error(f"Reconnect failed {self.connect_retry_times} times, send fail")
         return False
 
+    def start_scheduled_report(self):
+        if self.scheduled_report_thread.is_alive():
+            logging.error("Report thread is already on.")
+            return
+        logging.info("Starting scheduled report.")
+        self.scheduled_report_ready = True
+        self.scheduled_report_thread.start()
+        logging.info("Scheduled report start.")
 
-class PlatformInfo:
-    def __init__(self, maincomponent_id, subcomponent, broker="localhost", port=1883):
-        self.init_success = False
-        logging.basicConfig(filename='platform.log', level=logging.INFO, format='%(asctime)s %(message)s')
-        logging.info("Initializing")
-        self.system = platform.system()
-        self.cpu_usage = 0
-        self.ram_usage = 0
-        self.disk_usage = 0
-        self.pc_model = "Unknown Model"
-        self.json_data = None
-        self.interval = 3
-        logging.info(f"System is {self.system}")
-        if self.system == 'Windows':
-            # noinspection PyBroadException
-            try:
-                self.pc_model = subprocess.check_output('wmic csproduct get name', shell=True).decode().split('\n')[1]\
-                    .strip()
-            except Exception:
-                self.pc_model = "Unknown Model"
-        elif self.system == 'Linux':
-            # noinspection PyBroadException
-            try:
-                self.pc_model = subprocess.check_output('sudo dmidecode -s system-product-name', shell=True).decode().\
-                    strip()
-            except Exception:
-                self.pc_model = "Unknown Model"
-        elif self.system == "Darwin":
-            # noinspection PyBroadException
-            try:
-                result = subprocess.run(['system_profiler', 'SPHardwareDataType'], capture_output=True, text=True)
-                lines = result.stdout.split('\n')
-                for line in lines:
-                    if "Model Name" in line:
-                        self.pc_model = line.split(":")[1].strip()
-            except Exception:
-                self.pc_model = "Unknown Model"
+    def start(self):
+        if self.client:
+            self.client.loop_start()
+            logging.info("Mqtt loop started.")
+            self.start_scheduled_report()
         else:
-            self.pc_model = "Unknown System"
-        logging.info(f"pc model is {self.pc_model}")
-        self.create_json(['Platform', 'Model', 'CPU_Usage', 'RAM_Usage', 'Disk_Usage'], [self.system,
-                                                                                         self.pc_model,
-                                                                                         self.cpu_usage,
-                                                                                         self.ram_usage,
-                                                                                         self.disk_usage])
-        self.client = mqtt.Client(broker, port)
-        logging.info("mqtt client established.")
-        self.client.on_message = self.on_message
-        self.client.on_connect = self.on_connect
-        # noinspection PyBroadException
-        try:
-            self.client.connect("localhost", 1883, 60)
-        except Exception as e:
-            logging.error(f"Failed to connect to the broker:{e}.")
-            return
-        (result, mid) = self.client.subscribe('/topic/QueryUsage')
-        if result == mqtt.MQTT_ERR_SUCCESS:
-            logging.info("Subscribe successfully.")
-        elif result == mqtt.MQTT_ERR_NO_CONN:
-            logging.error(f"Subscription failed, no connection.")
-            return
-        else:
-            logging.error(f"Subscription failed, error code {result}")
-            return
-        self.client.loop_start()
-        logging.info("Loop started.")
-        self.init_success = True
-
-    def update_info(self):
-        # self.cpu_usage = psutil.cpu_percent(interval=1)
-        # self.ram_usage = psutil.virtual_memory().percent
-        # self.disk_usage = psutil.disk_usage('/').percent
-        self.json_data['CPU_Usage'] = self.cpu_usage
-        self.json_data['RAM_Usage'] = self.ram_usage
-        self.json_data['Disk_Usage'] = self.disk_usage
-        json_data = json.dumps(self.json_data)
-        self.client.publish("/topic/ReportUsage", json_data)
-
-    def create_json(self, index, value):
-        data_dict = dict(zip(index, value))
-        self.json_data = data_dict
-
-    def on_message(self, client, userdata, message):
-        if message.topic == 'topic/QueryUsage':
-            self.update_info()
-
-    def on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
-            logging.info("Connected successfully.")
-        else:
-            logging.error(f"Connection failed with error code {rc}.")
-            return
+            logging.error("Mqtt client not exist.")
+        while self.scheduled_report_ready:
+            pass
 
 
 if __name__ == '__main__':
-    # new = Vacuum("insider_transfer_DVI_1", "vacuum_1")
-    # if new.init_success:
-    #     new.start()
-    #     new_thread = threading.Thread(target=new.scheduled_report())
-    #     new_thread.setDaemon(True)
-    #     new_thread.start()
-    #     while new.scheduled_report_ready:
-    #         pass
-    loaded = None
-    try:
-        with open("123.json", 'r') as f:
-            loaded = json.load(f)
-    except Exception:
-        print("error")
-    if loaded:
-        print("true")
-    else:
-        print("false")
+    new = Vacuum("insider_transfer_DVI_1", "vacuum_1")
+    if new.init_success:
+        new.start()
