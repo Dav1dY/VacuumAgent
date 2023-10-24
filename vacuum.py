@@ -219,7 +219,6 @@ class Vacuum:
 
                 # recv reply
                 ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
-                data = None
                 if ready_to_read[0]:
                     try:
                         data = self.sock.recv(1024)
@@ -355,7 +354,6 @@ class Vacuum:
 
             # recv reply
             ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
-            data = None
             if ready_to_read:
                 try:
                     data = self.sock.recv(1024)
