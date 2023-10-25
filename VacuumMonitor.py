@@ -146,7 +146,6 @@ class Vacuum:
             return
         if not self.socket_connect_with_retry():
             return
-        # todo: may need to keep alive
 
         # init mqtt
         if not self.mqtt_client_init():
@@ -249,7 +248,7 @@ class Vacuum:
             else:
                 self.logger.error("Mqtt client not exist.")
         elif message.topic == '/Test' or message.topic == '/Try':  # suck or release
-            message = "00000,CHECK_ANALOG#"  # todo: change to check analog cmd
+            message = "00000,CHECK_ANALOG#"
             message = message.encode()
             if self.sock:
                 # send cmd
@@ -324,7 +323,6 @@ class Vacuum:
         # check self.sock before call this
         try:
             self.sock.sendall(b'')
-            # todo: check if this would cause problems on server
             return True
         except socket.error:
             return False
@@ -378,7 +376,7 @@ class Vacuum:
 
     def scheduled_report(self):
         self.logger.info("Thread start.")
-        message = "00000,QUERY_ANALOG#"  # todo: change to check analog cmd
+        message = "00000,QUERY_ANALOG#"
         message = message.encode()
         last_time = time.time()
         while self.scheduled_report_ready and self.sock and self.client:
