@@ -3,41 +3,61 @@ import json
 import socket
 import time
 import logging
+from logging.handlers import TimedRotatingFileHandler
 import re
 import threading
 import select
+import os
 
 
 class Vacuum:
-    def __init__(self, maincomponent_id, subcomponent):
+    def __init__(self):
         self.init_success = False
-        logging.basicConfig(filename='vacuum.log', level=logging.INFO, format='%(asctime)s %(message)s')
-        logging.info("*******************************")
-        logging.info("Initializing")
+
+        self.logger = logging.getLogger('VacuumLogger')
+        self.logger.setLevel(logging.INFO)
+
+        dir_name = '/vault/VacuumMonitor/log'
+        if not os.path.exists(dir_name):
+            # noinspection PyBroadException
+            try:
+                os.makedirs(dir_name)
+            except Exception:
+                return
+
+        # noinspection PyBroadException
+        try:
+            handler = TimedRotatingFileHandler('/vault/VacuumMonitor/log/VacuumMonitor.log', when='midnight', backupCount=30)
+        except Exception:
+            return
+        handler.suffix = "%Y-%m-%d"
+        formatter = logging.Formatter('%(asctime)s -  %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+        self.logger.info("Initializing.")
+        self.logger.info("*******************************")
 
         # load config file
         self.loaded_data = None
         # noinspection PyBroadException
         try:
-            with open("vacuum_config.json", 'r') as f:
+            with open("/vault/VacuumMonitor/config/vacuum_config.json", 'r') as f:
                 self.loaded_data = json.load(f)
-            logging.info("vacuum_config load success.")
+            self.logger.info("vacuum_config load success.")
         except FileNotFoundError:
-            logging.error("vacuum_config was not found.")
+            self.logger.error("vacuum_config was not found.")
             return
         except json.JSONDecodeError:
-            logging.error("An error occurred while decoding the JSON.")
+            self.logger.error("An error occurred while decoding the JSON.")
             return
         except Exception:
-            logging.error("An unexpected error occurred: ", exc_info=True)
+            self.logger.error("An unexpected error occurred: ", exc_info=True)
             return
 
         # init parameters
         # noinspection PyBroadException
         try:
-            self.config_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Config"
             self.query_config_topic = "/Devices/adc_agent/QueryConfig"
-            self.analog_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Analog"
             self.last_time = int(time.time())
             self.current_time = 0
             self.port_in_use = 0
@@ -47,13 +67,45 @@ class Vacuum:
             self.client = None
             self.scheduled_report_ready = False
             self.scheduled_report_thread = None
+
+            try:
+                with open('/vault/data_collection/test_station_config/gh_station_info.json', 'r') as f:
+                    data = json.load(f)
+                    if 'ghinfo' in data and 'STATION_NUMBER' in data['ghinfo']:
+                        self.station_number = data['ghinfo']['STATION_NUMBER']
+                    else:
+                        self.logger.error('Cannot find STATION_NUMBER.')
+                        return
+                    if 'ghinfo' in data and 'STATION_TYPE' in data['ghinfo']:
+                        self.station_type = data['ghinfo']['STATION_TYPE']
+                    else:
+                        self.logger.error('Cannot find STATION_TYPE.')
+                        return
+            except FileNotFoundError:
+                self.logger.error('File gh_station_info.json not found.')
+                return
+            except json.JSONDecodeError:
+                self.logger.error('An error occurred while decoding the JSON file.')
+                return
+            except Exception as e:
+                self.logger.error(f"An error occurred : {e}.")
+                return
+            self.logger.info("Load station info success.")
+            if self.station_type == "QT-BCM2" or self.station_type == "BOOT-ARGS":
+                maincomponent_id = "work_station_" + self.station_type
+            else:
+                maincomponent_id = "work_station_" + self.station_type + "_" + self.station_number
+            subcomponent = "VacuumMonitor"
+            self.config_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Config"
+            self.analog_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Analog"
+
             if self.loaded_data is not None:
                 self.broker = self.loaded_data.get('broker', "10.0.1.200")
                 self.port = int(self.loaded_data.get('broker_port', "1883"))
                 self.target_address = self.loaded_data.get('target_address', "10.0.1.202")
                 self.start_port = int(self.loaded_data.get('start_port', "4096"))
                 self.end_port = int(self.loaded_data.get('end_port', "4101"))
-                self.config_path = self.loaded_data.get('config_path', "Config.json")
+                self.config_path = self.loaded_data.get('config_path', "Config2Send_Vacuum.json")
                 self.report_interval = int(self.loaded_data.get('report_interval', "5"))
                 self.connect_retry_times = int(self.loaded_data.get('connect_retry_times', "3"))
                 self.socket_timeout = int(self.loaded_data.get('socket_timeout', "3"))
@@ -63,29 +115,29 @@ class Vacuum:
                 self.target_address = "10.0.1.202"
                 self.start_port = 4096
                 self.end_port = 4101
-                self.config_path = "Config.json"
+                self.config_path = "Config2Send_Vacuum.json"
                 self.report_interval = 5
                 self.connect_retry_times = 3
                 self.socket_timeout = 3
         except Exception:
-            logging.error("Initialize parameters fail.")
+            self.logger.error("Initialize parameters fail.")
             return
-        logging.info("All parameters loaded success.")
+        self.logger.info("All parameters loaded success.")
 
         # load config_data
         # noinspection PyBroadException
         try:
             with open(self.config_path, 'r') as f:
                 self.config_data = json.load(f)
-            logging.info("Config.json load success.")
+            self.logger.info("Config2Send_Vacuum.json load success.")
         except FileNotFoundError:
-            logging.error("Config.json was not found.")
+            self.logger.error("Config2Send_Vacuum.json was not found.")
             return
         except json.JSONDecodeError:
-            logging.error("An error occurred while decoding the JSON.")
+            self.logger.error("An error occurred while decoding the JSON.")
             return
         except Exception:
-            logging.error("An unexpected error occurred: ", exc_info=True)
+            self.logger.error("An unexpected error occurred: ", exc_info=True)
             return
         self.config_data = json.dumps(self.config_data)
 
@@ -111,7 +163,7 @@ class Vacuum:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             return True
         except socket.error as e:
-            logging.error(f"Failed to create a socket. Error: {e}")
+            self.logger.error(f"Failed to create a socket. Error: {e}")
             return False
 
     def socket_connect_with_retry(self) -> bool:
@@ -121,33 +173,33 @@ class Vacuum:
                 if not self.socket_init():
                     return False
             retry_times += 1
-            logging.info(f"Retry time = {retry_times}.")
+            self.logger.info(f"Retry time = {retry_times}.")
             if self.connect_to_target():
                 if self.is_socket_connected():
                     return True
             # time.sleep(1)
             self.sock = None
-        logging.error("Socket connect fail.")
+        self.logger.error("Socket connect fail.")
         return False
 
     def mqtt_client_init(self) -> bool:
         try:
             self.client = mqtt.Client(self.broker, self.port)
-            logging.info("mqtt client established.")
+            self.logger.info("mqtt client established.")
         except Exception as e:
-            logging.error(f"Failed to establish mqtt client: {e}")
+            self.logger.error(f"Failed to establish mqtt client: {e}")
             return False
         try:
             self.client.on_message = self.on_message
-            logging.info("Message callback registered.")
+            self.logger.info("Message callback registered.")
         except Exception as e:
-            logging.error(f"Failed to register message callback: {e}")
+            self.logger.error(f"Failed to register message callback: {e}")
             return False
         try:
             self.client.on_connect = self.on_connect
-            logging.info("Connect callback registered.")
+            self.logger.info("Connect callback registered.")
         except Exception as e:
-            logging.error(f"Failed to register connect callback: {e}")
+            self.logger.error(f"Failed to register connect callback: {e}")
             return False
         return True
 
@@ -157,47 +209,45 @@ class Vacuum:
             retry_times += 1
             try:
                 self.client.connect("localhost", 1883, 60)
-                logging.info("Connect to broker success.")
+                self.logger.info("Connect to broker success.")
                 break
             except Exception as e:
-                logging.error(f"Failed to connect to the broker: {e}.")
+                self.logger.error(f"Failed to connect to the broker: {e}.")
                 if retry_times == self.connect_retry_times:
                     return False
 
         (subscribe_result, mid) = self.client.subscribe("/Devices/adc_agent/QueryConfig")
-        self.client.subscribe("/Test")
         # self.client.subscribe("")   add more topics
         if subscribe_result == 0:
-            logging.info("subscribe success.")
+            self.logger.info("subscribe success.")
         else:
-            logging.error(f"Failed to subscribe. Result code: {subscribe_result}")
+            self.logger.error(f"Failed to subscribe. Result code: {subscribe_result}")
             return False
         return True
 
     def start_scheduled_init(self):
         if self.scheduled_report_thread is not None:
-            logging.error("Scheduled report already started.")
+            self.logger.error("Scheduled report already started.")
             return
         self.scheduled_report_thread = threading.Thread(target=self.scheduled_report)
         self.scheduled_report_thread.setDaemon(True)
 
-    @staticmethod
-    def on_connect(client, userdata, flags, rc):
+    def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
-            logging.info("Connected successfully.")
+            self.logger.info("Connected successfully.")
         else:
-            logging.error(f"Connection failed with error code {rc}.")
+            self.logger.error(f"Connection failed with error code {rc}.")
 
     def on_message(self, client, userdata, message):
         if message.topic == '/Devices/adc_agent/QueryConfig':  # query config
             if self.client:
                 try:
                     client.publish(self.config_topic, self.config_data)
-                    logging.info("Config message published.")
+                    self.logger.info("Config message published.")
                 except Exception as e:
-                    logging.error(f"Failed to publish message: {e}.")
+                    self.logger.error(f"Failed to publish message: {e}.")
             else:
-                logging.error("Mqtt client not exist.")
+                self.logger.error("Mqtt client not exist.")
         elif message.topic == '/Test' or message.topic == '/Try':  # suck or release
             message = "00000,CHECK_ANALOG#"  # todo: change to check analog cmd
             message = message.encode()
@@ -207,14 +257,14 @@ class Vacuum:
                 if ready_to_write[0]:
                     try:
                         if self.socket_send(message):
-                            logging.info("Command sent.")
+                            self.logger.info("Command sent.")
                         else:
-                            logging.error("Failed to send command.")
+                            self.logger.error("Failed to send command.")
                     except Exception as e:
-                        logging.error(f"Failed to send command: {e}")
+                        self.logger.error(f"Failed to send command: {e}")
                         return
                 else:
-                    logging.error("Socket unable to write, timeout.")
+                    self.logger.error("Socket unable to write, timeout.")
                     return
 
                 # recv reply
@@ -222,12 +272,12 @@ class Vacuum:
                 if ready_to_read[0]:
                     try:
                         data = self.sock.recv(1024)
-                        logging.info("Reply received.")
+                        self.logger.info("Reply received.")
                     except Exception as e:
-                        logging.error(f"Failed to receive analog: {e}")
+                        self.logger.error(f"Failed to receive analog: {e}")
                         return
                 else:
-                    logging.error("Socket unable to read, timeout.")
+                    self.logger.error("Socket unable to read, timeout.")
                     return
 
                 # handle data
@@ -239,35 +289,35 @@ class Vacuum:
                             if self.client:
                                 try:
                                     client.publish(self.analog_topic, json_data)
-                                    logging.info("Analog message published.")
+                                    self.logger.info("Analog message published.")
                                 except Exception as e:
-                                    logging.error(f"Failed to publish message: {e}")
+                                    self.logger.error(f"Failed to publish message: {e}")
                             else:
-                                logging.error("Mqtt client not exist.")
+                                self.logger.error("Mqtt client not exist.")
                     except FileNotFoundError:
-                        logging.error("The file 'Analog.json' was not found.")
+                        self.logger.error("The file 'Analog.json' was not found.")
                     except json.JSONDecodeError:
-                        logging.error("An error occurred while decoding the JSON.")
+                        self.logger.error("An error occurred while decoding the JSON.")
                     except Exception as e:
-                        logging.error(f"An unexpected error occurred: {e}")
+                        self.logger.error(f"An unexpected error occurred: {e}")
 
     def connect_to_target(self) -> bool:
         self.port_in_use = 0
-        logging.info("Starting to connecting to plc.")
+        self.logger.info("Starting to connecting to plc.")
 
         for p in range(self.start_port, self.end_port + 1):
             try:
-                logging.info(f"Starting to connecting to {self.target_address}:{p}.")
+                self.logger.info(f"Starting to connecting to {self.target_address}:{p}.")
                 self.sock.connect((self.target_address, p))
                 # todo: takes 20s when fail, can modify timeout
                 self.port_in_use = p
                 break
             except socket.error:
-                logging.error(f"Port {p} fail.")
+                self.logger.error(f"Port {p} fail.")
         if self.port_in_use == 0:
-            logging.error("All port failed.")
+            self.logger.error("All port failed.")
             return False
-        logging.info(f"Connect to {self.target_address}:{self.port_in_use}.")
+        self.logger.info(f"Connect to {self.target_address}:{self.port_in_use}.")
         return True
 
     def is_socket_connected(self) -> bool:
@@ -286,17 +336,17 @@ class Vacuum:
             try:
                 data = data.decode('utf-8')
             except UnicodeDecodeError as e:
-                logging.error(f"Failed to decode message: {e}.")
+                self.logger.error(f"Failed to decode message: {e}.")
                 return
             try:
                 match = re.search(',REPORT_ANALOG,(\\s*)(\\d+)', data)
                 if match:
                     data = int(match.group(2))
                 else:
-                    logging.error("Receive bad message1.")
+                    self.logger.error("Receive bad message1.")
                     return
             except ValueError:
-                logging.error("Receive bad message2.")
+                self.logger.error("Receive bad message2.")
                 return
         else:
             # case that socket receives timeout and have no data send back
@@ -314,20 +364,20 @@ class Vacuum:
                 json.dump(json_data, f)
                 f.truncate()
         except FileNotFoundError:
-            logging.error("The file 'Analog.json' was not found.")
+            self.logger.error("The file 'Analog.json' was not found.")
             return
         except json.JSONDecodeError:
-            logging.error("An error occurred while decoding the JSON.")
+            self.logger.error("An error occurred while decoding the JSON.")
             return
         except Exception as e:
-            logging.error(f"An unexpected error occurred: {e}")
+            self.logger.error(f"An unexpected error occurred: {e}")
             return
 
         self.last_time = self.current_time
         self.update_state = True
 
     def scheduled_report(self):
-        logging.info("Thread start.")
+        self.logger.info("Thread start.")
         message = "00000,QUERY_ANALOG#"  # todo: change to check analog cmd
         message = message.encode()
         last_time = time.time()
@@ -341,14 +391,14 @@ class Vacuum:
             if ready_to_write:
                 try:
                     if self.socket_send(message):
-                        logging.info("Command sent.")
+                        self.logger.info("Command sent.")
                     else:
-                        logging.error("Failed to send command.")
+                        self.logger.error("Failed to send command.")
                 except Exception as e:
-                    logging.error(f"Failed to send command: {e}")
+                    self.logger.error(f"Failed to send command: {e}")
                     continue
             else:
-                logging.error("Socket unable to write, timeout.")
+                self.logger.error("Socket unable to write, timeout.")
                 continue
             time.sleep(0.1)
 
@@ -357,17 +407,17 @@ class Vacuum:
             if ready_to_read:
                 try:
                     data = self.sock.recv(1024)
-                    logging.info("Reply received.")
+                    self.logger.info("Reply received.")
                 except Exception as e:
-                    logging.error(f"Failed to receive analog: {e}")
+                    self.logger.error(f"Failed to receive analog: {e}")
                     continue
                     # break
             else:
-                logging.error("Socket unable to read, timeout.")
+                self.logger.error("Socket unable to read, timeout.")
                 continue
                 # break
 
-            logging.info(f"DATA = {data}.")
+            self.logger.info(f"DATA = {data}.")
             self.update_json(data)  # update json
 
             if self.update_state:
@@ -377,24 +427,24 @@ class Vacuum:
                         if self.client:
                             try:
                                 self.client.publish(self.analog_topic, json_data)
-                                logging.info("Analog message published.")
+                                self.logger.info("Analog message published.")
                             except Exception as e:
-                                logging.error(f"Failed to publish message: {e}")
+                                self.logger.error(f"Failed to publish message: {e}")
                         else:
-                            logging.error("Mqtt client not exist.")
+                            self.logger.error("Mqtt client not exist.")
                 except FileNotFoundError:
-                    logging.error("The file 'Analog.json' was not found.")
+                    self.logger.error("The file 'Analog.json' was not found.")
                 except json.JSONDecodeError:
-                    logging.error("An error occurred while decoding the JSON.")
+                    self.logger.error("An error occurred while decoding the JSON.")
                 except Exception as e:
-                    logging.error(f"An unexpected error occurred: {e}")
+                    self.logger.error(f"An unexpected error occurred: {e}")
 
-        logging.info("Thread end.")
+        self.logger.info("Thread end.")
         self.scheduled_report_ready = False
 
     def socket_send(self, message) -> bool:
         if not self.sock:
-            logging.error("Socket client not exist.")
+            self.logger.error("Socket client not exist.")
             return False
 
         for reconnect_retry_times in range(self.connect_retry_times):
@@ -403,42 +453,38 @@ class Vacuum:
                     self.sock.sendall(message)
                     return True
                 except socket.error as e:
-                    logging.error(f"Socket error: {e}, try {send_retry_times} times.")
+                    self.logger.error(f"Socket error: {e}, try {send_retry_times} times.")
                     time.sleep(1)
                 except Exception as e:
-                    logging.error(f"Failed to send command: {e}, try {send_retry_times} times.")
+                    self.logger.error(f"Failed to send command: {e}, try {send_retry_times} times.")
                     time.sleep(1)
-            logging.error(f"Retry {self.connect_retry_times} times.")
+            self.logger.error(f"Retry {self.connect_retry_times} times.")
             self.sock.close()
             self.connect_to_target()
-        logging.error(f"Reconnect failed {self.connect_retry_times} times, send fail")
+        self.logger.error(f"Reconnect failed {self.connect_retry_times} times, send fail")
         return False
 
     def start_scheduled_report(self):
         if self.scheduled_report_thread.is_alive():
-            logging.error("Report thread is already on.")
+            self.logger.error("Report thread is already on.")
             return
-        logging.info("Starting scheduled report.")
+        self.logger.info("Starting scheduled report.")
         self.scheduled_report_ready = True
         self.scheduled_report_thread.start()
-        logging.info("Scheduled report start.")
+        self.logger.info("Scheduled report start.")
 
     def start(self):
         if self.client:
             self.client.loop_start()
-            logging.info("Mqtt loop started.")
+            self.logger.info("Mqtt loop started.")
             self.start_scheduled_report()
         else:
-            logging.error("Mqtt client not exist.")
+            self.logger.error("Mqtt client not exist.")
         while self.scheduled_report_ready:
             pass
 
 
 if __name__ == '__main__':
-    new = Vacuum("insider_transfer_DVI_1", "vacuum_1")
+    new = Vacuum()
     if new.init_success:
         new.start()
-
-
-
-
