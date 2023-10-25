@@ -13,35 +13,36 @@ import os
 class SystemInfo:
     def __init__(self):
         self.init_success = False
+
         self.logger = logging.getLogger('SystemInfoLogger')
         self.logger.setLevel(logging.INFO)
-        # todo: check if dir exist
-        dir_name = '/vault/SystemInfo/log/'
+
+        dir_name = '/vault/SystemInfo/log'
         if not os.path.exists(dir_name):
-            # If the directory does not exist, create it
             # noinspection PyBroadException
             try:
                 os.makedirs(dir_name)
             except Exception as e:
+                print("Can not create log file, exit.")
                 return
         # noinspection PyBroadException
         try:
             handler = TimedRotatingFileHandler('/vault/SystemInfo/log/SystemInfo.log', when='midnight', backupCount=30)
-            # handler = TimedRotatingFileHandler(filename='SystemInfo.log', when='midnight', backupCount=30)
-        except Exception as e:
+        except Exception:
+            print("Logger error, exit.")
             return
         handler.suffix = "%Y-%m-%d"
         formatter = logging.Formatter('%(asctime)s -  %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
-
+        self.logger.info("*************************")
         self.logger.info("Initializing.")
+
         # load config file
         self.loaded_data = None
         # noinspection PyBroadException
         try:
             with open('/vault/SystemInfo/config/SystemInfo_config.json', 'r') as f:
-                # with open("SystemInfo_config.json", 'r') as f:
                 self.loaded_data = json.load(f)
             self.logger.info("SystemInfo_config load success.")
         except FileNotFoundError:
@@ -107,7 +108,7 @@ class SystemInfo:
                 self.query_config_topic = "/Devices/adc_agent/QueryConfig"
                 self.broker = "10.0.1.200"
                 self.port = 1883
-                self.config_path = "Config.json"
+                self.config_path = "Config2Send_Vacuum.json"
                 self.report_interval = 5
                 self.connect_retry_times = 3
                 self.publish_fail_tolerance = 5
@@ -115,7 +116,7 @@ class SystemInfo:
                 self.query_config_topic = self.loaded_data.get('query_config_topic', "/Devices/adc_agent/QueryConfig")
                 self.broker = self.loaded_data.get('broker', "10.0.1.200")
                 self.port = int(self.loaded_data.get('broker_port', "1883"))
-                self.config_path = self.loaded_data.get('config_path', "Config.json")
+                self.config_path = self.loaded_data.get('config_path', "Config2Send_Vacuum.json")
                 self.report_interval = int(self.loaded_data.get('report_interval', "5"))
                 self.connect_retry_times = int(self.loaded_data.get('connect_retry_times', "3"))
                 self.publish_fail_tolerance = int(self.loaded_data.get('publish_fail_tolerance', "5"))
@@ -293,6 +294,7 @@ class SystemInfo:
             try:
                 self.client.publish(self.config_topic, data2send)
                 self.logger.info("Config message published.")
+                self.logger.info(f"Config message: {data2send}.")
             except Exception as e:
                 self.logger.error(f"Failed to publish message: {e}.")
                 return False
@@ -304,8 +306,6 @@ class SystemInfo:
     def on_message(self, client, userdata, message):
         if message.topic == self.query_config_topic:
             self.send_config()
-        # elif message.topic == 'topic/QueryUsage':
-        #     self.update_info()
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -391,7 +391,7 @@ class SystemInfo:
         else:
             self.logger.error("Mqtt client not exist.")
         while self.scheduled_report_ready:
-            pass
+            time.sleep(10)
 
 
 if __name__ == '__main__':
