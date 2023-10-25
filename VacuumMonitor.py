@@ -284,7 +284,7 @@ class Vacuum:
                 self.update_json(data)
                 if self.update_state:
                     try:
-                        with open('Analog.json', 'r') as f:
+                        with open('/vault/VacuumMonitor/Analog.json', 'r') as f:
                             json_data = json.dumps(json.load(f))
                             if self.client:
                                 try:
@@ -355,7 +355,7 @@ class Vacuum:
         self.current_time = int(time.time())
 
         try:
-            with open('Analog.json', 'r+') as f:
+            with open('/vault/VacuumMonitor/Analog.json', 'r+') as f:
                 json_data = json.load(f)
                 json_data['value'] = float(data/4000)
                 json_data['interval'] = self.current_time - self.last_time
@@ -422,7 +422,7 @@ class Vacuum:
 
             if self.update_state:
                 try:
-                    with open('Analog.json', 'r') as f:
+                    with open('/vault/VacuumMonitor/Analog.json', 'r') as f:
                         json_data = json.dumps(json.load(f))
                         if self.client:
                             try:
