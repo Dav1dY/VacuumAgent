@@ -23,16 +23,19 @@ class SystemInfo:
             try:
                 os.makedirs(dir_name)
             except Exception as e:
+                print("Can not create log file, exit.")
                 return
         # noinspection PyBroadException
         try:
             handler = TimedRotatingFileHandler('/vault/SystemInfo/log/SystemInfo.log', when='midnight', backupCount=30)
-        except Exception as e:
+        except Exception:
+            print("Logger error, exit.")
             return
         handler.suffix = "%Y-%m-%d"
         formatter = logging.Formatter('%(asctime)s -  %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
+        self.logger.info("*************************")
         self.logger.info("Initializing.")
 
         # load config file
@@ -291,6 +294,7 @@ class SystemInfo:
             try:
                 self.client.publish(self.config_topic, data2send)
                 self.logger.info("Config message published.")
+                self.logger.info(f"Config message: {data2send}.")
             except Exception as e:
                 self.logger.error(f"Failed to publish message: {e}.")
                 return False
@@ -302,8 +306,6 @@ class SystemInfo:
     def on_message(self, client, userdata, message):
         if message.topic == self.query_config_topic:
             self.send_config()
-        # elif message.topic == 'topic/QueryUsage':
-        #     self.update_info()
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -389,7 +391,7 @@ class SystemInfo:
         else:
             self.logger.error("Mqtt client not exist.")
         while self.scheduled_report_ready:
-            pass
+            time.sleep(10)
 
 
 if __name__ == '__main__':

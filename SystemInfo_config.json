@@ -2,7 +2,7 @@
     "broker": "10.0.1.200",
     "broker_port": "1883",
     "config_path": "/vault/SystemInfo/config/Config2Send_SystemInfo.json",
-    "report_interval": "5",
+    "report_interval": "10",
     "connect_retry_times": "3",
     "publish_fail_tolerance": "5",
     "query_config_topic": "/Devices/adc_agent/QueryConfig"
