@@ -8,6 +8,7 @@ import re
 import threading
 import select
 import os
+import psutil
 
 
 class Vacuum:
@@ -67,37 +68,33 @@ class Vacuum:
             self.client = None
             self.scheduled_report_ready = False
             self.scheduled_report_thread = None
+            self.maincomponent_id = None
 
-            try:
-                with open('/vault/data_collection/test_station_config/gh_station_info.json', 'r') as f:
-                    data = json.load(f)
-                    if 'ghinfo' in data and 'STATION_NUMBER' in data['ghinfo']:
-                        self.station_number = data['ghinfo']['STATION_NUMBER']
-                    else:
-                        self.logger.error('Cannot find STATION_NUMBER.')
-                        return
-                    if 'ghinfo' in data and 'STATION_TYPE' in data['ghinfo']:
-                        self.station_type = data['ghinfo']['STATION_TYPE']
-                    else:
-                        self.logger.error('Cannot find STATION_TYPE.')
-                        return
-            except FileNotFoundError:
-                self.logger.error('File gh_station_info.json not found.')
+            for interface, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.address == '10.0.1.200':
+                        try:
+                            with open('/vault/ADCAgent/dst/setting/adc_agent/register.json', 'r') as f:
+                                data = json.load(f)
+                                if 'cell_type' in data:
+                                    self.maincomponent_id = "work_station_" + data['cell_type']
+                                    break
+                                else:
+                                    self.logger.error("Can not find cell type in register.json.")
+                                    return
+                        except Exception as e:
+                            self.logger.error(f"Failed to load adc_agent/register.json : {e}.")
+                            return
+            if self.maincomponent_id is None:
+                self.logger.error("Can not find local address.")
                 return
-            except json.JSONDecodeError:
-                self.logger.error('An error occurred while decoding the JSON file.')
-                return
-            except Exception as e:
-                self.logger.error(f"An error occurred : {e}.")
-                return
-            self.logger.info("Load station info success.")
-            if self.station_type == "QT-BCM2" or self.station_type == "BOOT-ARGS":
-                maincomponent_id = "work_station_" + self.station_type
             else:
-                maincomponent_id = "work_station_" + self.station_type + "_" + self.station_number
+                self.logger.info("Load station info success.")
             subcomponent = "VacuumMonitor"
-            self.config_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Config"
-            self.analog_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Analog"
+            self.config_topic = "/Devices/" + self.maincomponent_id + "/" + subcomponent + "/" + "Config"
+            self.analog_topic = "/Devices/" + self.maincomponent_id + "/" + subcomponent + "/" + "Analog"
+            self.logger.info(f"config_topic: {self.config_topic}")
+            self.logger.info(f"analog_topic: {self.analog_topic}")
 
             if self.loaded_data is not None:
                 self.broker = self.loaded_data.get('broker', "10.0.1.200")
@@ -479,7 +476,7 @@ class Vacuum:
         else:
             self.logger.error("Mqtt client not exist.")
         while self.scheduled_report_ready:
-            pass
+            time.sleep(10)
 
 
 if __name__ == '__main__':
