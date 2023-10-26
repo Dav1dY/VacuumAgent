@@ -22,7 +22,7 @@ class SystemInfo:
             # noinspection PyBroadException
             try:
                 os.makedirs(dir_name)
-            except Exception as e:
+            except Exception:
                 print("Can not create log file, exit.")
                 return
         # noinspection PyBroadException
