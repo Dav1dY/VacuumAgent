@@ -6,8 +6,9 @@ from logging.handlers import TimedRotatingFileHandler
 import platform
 import subprocess
 import threading
-import psutil
+# import psutil
 import os
+import re
 
 
 class UsageMonitor:
@@ -27,11 +28,12 @@ class UsageMonitor:
                 return
         # noinspection PyBroadException
         try:
-            handler = TimedRotatingFileHandler('/vault/UsageMonitor/log/UsageMonitor.log', when='midnight', backupCount=30)
+            handler = TimedRotatingFileHandler('/vault/UsageMonitor/log/UsageMonitor', when='midnight', backupCount=30)
         except Exception:
             print("Logger error, exit.")
             return
-        handler.suffix = "%Y-%m-%d"
+        handler.suffix = "%Y-%m-%d.log"
+        # handler.extMatch = re.compile(r"^\d{4}-\d{2}-\d{2}.log")
         formatter = logging.Formatter('%(asctime)s -  %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
