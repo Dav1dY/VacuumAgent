@@ -8,6 +8,8 @@ import subprocess
 import threading
 import psutil
 import os
+import pyvisa
+from pyvisa import ResourceManager, constants
 
 
 class UsageMonitor:
@@ -27,11 +29,12 @@ class UsageMonitor:
                 return
         # noinspection PyBroadException
         try:
-            handler = TimedRotatingFileHandler('/vault/UsageMonitor/log/UsageMonitor.log', when='midnight', backupCount=30)
+            handler = TimedRotatingFileHandler('/vault/UsageMonitor/log/UsageMonitor', when='midnight', backupCount=30)
         except Exception:
             print("Logger error, exit.")
             return
-        handler.suffix = "%Y-%m-%d"
+
+        handler.suffix = "%Y-%m-%d.log"
         formatter = logging.Formatter('%(asctime)s -  %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
@@ -200,6 +203,7 @@ class UsageMonitor:
         self.scheduled_report_init()
         self.scheduled_report_ready = True
         self.init_success = True
+        self.logger.info("All init done.")
 
     def get_pc_model(self):
         if self.system == 'Windows':
@@ -408,7 +412,7 @@ class UsageMonitor:
                     break
                 elif i == self.connect_retry_times-1:
                     self.logger.error(f"Send config failed {self.connect_retry_times} times.")
-                    return False
+                    return
             self.logger.info("First config data sent.")
             self.start_scheduled_report()
         else:
@@ -421,3 +425,11 @@ if __name__ == '__main__':
     new = UsageMonitor()
     if new.init_success:
         new.start()
+    # os.environ['PYVISA_SIM_CONFIG'] = "C:/vault/pyvisa-test/my_instrument.yaml"
+    # rm = ResourceManager('@sim')
+    # inst = rm.open_resource('ASRL1::INSTR')
+    # inst.timeout = 2000
+    # inst.write('?IDN')
+    # resp = inst.read()
+    # print(resp)
+    # inst.close()

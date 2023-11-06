@@ -24,19 +24,22 @@ class Vacuum:
             try:
                 os.makedirs(dir_name)
             except Exception:
+                print("Can not create log file, exit.")
                 return
 
         # noinspection PyBroadException
         try:
-            handler = TimedRotatingFileHandler('/vault/VacuumMonitor/log/VacuumMonitor.log', when='midnight', backupCount=30)
+            handler = TimedRotatingFileHandler('/vault/VacuumMonitor/log/VacuumMonitor', when='midnight', backupCount=30)
         except Exception:
+            print("Logger error, exit.")
             return
-        handler.suffix = "%Y-%m-%d"
+
+        handler.suffix = "%Y-%m-%d.log"
         formatter = logging.Formatter('%(asctime)s -  %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
+        self.logger.info("*************************")
         self.logger.info("Initializing.")
-        self.logger.info("*******************************")
 
         # load config file
         self.loaded_data = None
@@ -136,7 +139,6 @@ class Vacuum:
         except Exception:
             self.logger.error("An unexpected error occurred: ", exc_info=True)
             return
-        self.config_data = json.dumps(self.config_data)
 
         # init socket client
         if not self.socket_init():
@@ -153,6 +155,7 @@ class Vacuum:
         self.start_scheduled_init()
         self.scheduled_report_ready = True
         self.init_success = True
+        self.logger.info("All init done.")
 
     def socket_init(self) -> bool:
         try:
@@ -234,16 +237,25 @@ class Vacuum:
         else:
             self.logger.error(f"Connection failed with error code {rc}.")
 
+    def send_config(self) -> bool:
+        self.config_data['timestamp'] = time.time()
+        data2send = json.dumps(self.config_data)
+        if self.client:
+            try:
+                self.client.publish(self.config_topic, data2send)
+                self.logger.info("Config message published.")
+                self.logger.info(f"Config message: {data2send}.")
+            except Exception as e:
+                self.logger.error(f"Failed to publish message: {e}.")
+                return False
+        else:
+            self.logger.error("Mqtt client not exist.")
+            return False
+        return True
+
     def on_message(self, client, userdata, message):
         if message.topic == '/Devices/adc_agent/QueryConfig':  # query config
-            if self.client:
-                try:
-                    client.publish(self.config_topic, self.config_data)
-                    self.logger.info("Config message published.")
-                except Exception as e:
-                    self.logger.error(f"Failed to publish message: {e}.")
-            else:
-                self.logger.error("Mqtt client not exist.")
+            self.send_config()
         elif message.topic == '/Test' or message.topic == '/Try':  # suck or release
             message = "00000,CHECK_ANALOG#"
             message = message.encode()
@@ -472,6 +484,13 @@ class Vacuum:
         if self.client:
             self.client.loop_start()
             self.logger.info("Mqtt loop started.")
+            for i in range(0, self.connect_retry_times):
+                if self.send_config():
+                    break
+                elif i == self.connect_retry_times-1:
+                    self.logger.error(f"Send config failed {self.connect_retry_times} times.")
+                    return
+            self.logger.info("First config data sent.")
             self.start_scheduled_report()
         else:
             self.logger.error("Mqtt client not exist.")
