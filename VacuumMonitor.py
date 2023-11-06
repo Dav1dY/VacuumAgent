@@ -8,6 +8,7 @@ import re
 import threading
 import select
 import os
+import psutil
 
 
 class Vacuum:
@@ -23,19 +24,22 @@ class Vacuum:
             try:
                 os.makedirs(dir_name)
             except Exception:
+                print("Can not create log file, exit.")
                 return
 
         # noinspection PyBroadException
         try:
-            handler = TimedRotatingFileHandler('/vault/VacuumMonitor/log/VacuumMonitor.log', when='midnight', backupCount=30)
+            handler = TimedRotatingFileHandler('/vault/VacuumMonitor/log/VacuumMonitor', when='midnight', backupCount=30)
         except Exception:
+            print("Logger error, exit.")
             return
-        handler.suffix = "%Y-%m-%d"
+
+        handler.suffix = "%Y-%m-%d.log"
         formatter = logging.Formatter('%(asctime)s -  %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
+        self.logger.info("*************************")
         self.logger.info("Initializing.")
-        self.logger.info("*******************************")
 
         # load config file
         self.loaded_data = None
@@ -67,37 +71,33 @@ class Vacuum:
             self.client = None
             self.scheduled_report_ready = False
             self.scheduled_report_thread = None
+            self.maincomponent_id = None
 
-            try:
-                with open('/vault/data_collection/test_station_config/gh_station_info.json', 'r') as f:
-                    data = json.load(f)
-                    if 'ghinfo' in data and 'STATION_NUMBER' in data['ghinfo']:
-                        self.station_number = data['ghinfo']['STATION_NUMBER']
-                    else:
-                        self.logger.error('Cannot find STATION_NUMBER.')
-                        return
-                    if 'ghinfo' in data and 'STATION_TYPE' in data['ghinfo']:
-                        self.station_type = data['ghinfo']['STATION_TYPE']
-                    else:
-                        self.logger.error('Cannot find STATION_TYPE.')
-                        return
-            except FileNotFoundError:
-                self.logger.error('File gh_station_info.json not found.')
+            for interface, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.address == '10.0.1.200':
+                        try:
+                            with open('/vault/ADCAgent/dst/setting/adc_agent/register.json', 'r') as f:
+                                data = json.load(f)
+                                if 'cell_type' in data:
+                                    self.maincomponent_id = "work_station_" + data['cell_type']
+                                    break
+                                else:
+                                    self.logger.error("Can not find cell type in register.json.")
+                                    return
+                        except Exception as e:
+                            self.logger.error(f"Failed to load adc_agent/register.json : {e}.")
+                            return
+            if self.maincomponent_id is None:
+                self.logger.error("Can not find local address.")
                 return
-            except json.JSONDecodeError:
-                self.logger.error('An error occurred while decoding the JSON file.')
-                return
-            except Exception as e:
-                self.logger.error(f"An error occurred : {e}.")
-                return
-            self.logger.info("Load station info success.")
-            if self.station_type == "QT-BCM2" or self.station_type == "BOOT-ARGS":
-                maincomponent_id = "work_station_" + self.station_type
             else:
-                maincomponent_id = "work_station_" + self.station_type + "_" + self.station_number
+                self.logger.info("Load station info success.")
             subcomponent = "VacuumMonitor"
-            self.config_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Config"
-            self.analog_topic = "/Devices/" + maincomponent_id + "/" + subcomponent + "/" + "Analog"
+            self.config_topic = "/Devices/" + self.maincomponent_id + "/" + subcomponent + "/" + "Config"
+            self.analog_topic = "/Devices/" + self.maincomponent_id + "/" + subcomponent + "/" + "Analog"
+            self.logger.info(f"config_topic: {self.config_topic}")
+            self.logger.info(f"analog_topic: {self.analog_topic}")
 
             if self.loaded_data is not None:
                 self.broker = self.loaded_data.get('broker', "10.0.1.200")
@@ -139,7 +139,6 @@ class Vacuum:
         except Exception:
             self.logger.error("An unexpected error occurred: ", exc_info=True)
             return
-        self.config_data = json.dumps(self.config_data)
 
         # init socket client
         if not self.socket_init():
@@ -156,6 +155,7 @@ class Vacuum:
         self.start_scheduled_init()
         self.scheduled_report_ready = True
         self.init_success = True
+        self.logger.info("All init done.")
 
     def socket_init(self) -> bool:
         try:
@@ -237,16 +237,25 @@ class Vacuum:
         else:
             self.logger.error(f"Connection failed with error code {rc}.")
 
+    def send_config(self) -> bool:
+        self.config_data['timestamp'] = time.time()
+        data2send = json.dumps(self.config_data)
+        if self.client:
+            try:
+                self.client.publish(self.config_topic, data2send)
+                self.logger.info("Config message published.")
+                self.logger.info(f"Config message: {data2send}.")
+            except Exception as e:
+                self.logger.error(f"Failed to publish message: {e}.")
+                return False
+        else:
+            self.logger.error("Mqtt client not exist.")
+            return False
+        return True
+
     def on_message(self, client, userdata, message):
         if message.topic == '/Devices/adc_agent/QueryConfig':  # query config
-            if self.client:
-                try:
-                    client.publish(self.config_topic, self.config_data)
-                    self.logger.info("Config message published.")
-                except Exception as e:
-                    self.logger.error(f"Failed to publish message: {e}.")
-            else:
-                self.logger.error("Mqtt client not exist.")
+            self.send_config()
         elif message.topic == '/Test' or message.topic == '/Try':  # suck or release
             message = "00000,CHECK_ANALOG#"
             message = message.encode()
@@ -476,11 +485,18 @@ class Vacuum:
         if self.client:
             self.client.loop_start()
             self.logger.info("Mqtt loop started.")
+            for i in range(0, self.connect_retry_times):
+                if self.send_config():
+                    break
+                elif i == self.connect_retry_times-1:
+                    self.logger.error(f"Send config failed {self.connect_retry_times} times.")
+                    return
+            self.logger.info("First config data sent.")
             self.start_scheduled_report()
         else:
             self.logger.error("Mqtt client not exist.")
         while self.scheduled_report_ready:
-            pass
+            time.sleep(10)
 
 
 if __name__ == '__main__':
