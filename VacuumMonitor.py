@@ -256,8 +256,8 @@ class Vacuum:
     def on_message(self, client, userdata, message):
         if message.topic == '/Devices/adc_agent/QueryConfig':  # query config
             self.send_config()
-        elif message.topic == '/Test' or message.topic == '/Try':  # suck or release
-            message = "00000,CHECK_ANALOG#"
+        elif message.topic == '/Test' or message.topic == '/Try':  # supposed to follow some topics from robot
+            message = "00000,QUERY_ANALOG#"
             message = message.encode()
             if self.sock:
                 # send cmd
@@ -386,6 +386,7 @@ class Vacuum:
     def scheduled_report(self):
         self.logger.info("Thread start.")
         message = "00000,QUERY_ANALOG#"
+        # message = "00000,QUERY_ERROR"
         message = message.encode()
         last_time = time.time()
         while self.scheduled_report_ready and self.sock and self.client:
