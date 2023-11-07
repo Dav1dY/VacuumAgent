@@ -364,7 +364,7 @@ class Vacuum:
         try:
             with open('/vault/VacuumMonitor/Analog.json', 'r+') as f:
                 json_data = json.load(f)
-                json_data['value'] = float(data/4000)
+                json_data['value'] = float(data/400)
                 json_data['interval'] = self.current_time - self.last_time
                 json_data['timestamp'] = self.current_time
                 f.seek(0)
