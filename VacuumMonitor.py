@@ -35,7 +35,7 @@ class Vacuum:
             return
 
         handler.suffix = "%Y-%m-%d.log"
-        formatter = logging.Formatter('%(asctime)s -  %(levelname)s - %(message)s')
+        formatter = logging.Formatter('%(asctime)s - %(threadName)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         self.logger.info("*************************")
@@ -159,6 +159,7 @@ class Vacuum:
 
     def socket_init(self) -> bool:
         try:
+            self.sock = None
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             return True
         except socket.error as e:
@@ -167,6 +168,9 @@ class Vacuum:
 
     def socket_connect_with_retry(self) -> bool:
         retry_times = 0
+        if not self.connect_retry_times or 0 == self.connect_retry_times:
+            self.logger.error("Parameter connect_retry_times not set.")
+            return False
         while retry_times < self.connect_retry_times:
             if not self.sock:
                 if not self.socket_init():
@@ -175,8 +179,8 @@ class Vacuum:
             self.logger.info(f"Retry time = {retry_times}.")
             if self.connect_to_target():
                 if self.is_socket_connected():
+                    # todo: connection is checked twice here, may reduce
                     return True
-            # time.sleep(1)
             self.sock = None
         self.logger.error("Socket connect fail.")
         return False
@@ -228,7 +232,7 @@ class Vacuum:
         if self.scheduled_report_thread is not None:
             self.logger.error("Scheduled report already started.")
             return
-        self.scheduled_report_thread = threading.Thread(target=self.scheduled_report)
+        self.scheduled_report_thread = threading.Thread(name='Report_Thread', target=self.scheduled_report)
         self.scheduled_report_thread.setDaemon(True)
 
     def on_connect(self, client, userdata, flags, rc):
@@ -256,8 +260,8 @@ class Vacuum:
     def on_message(self, client, userdata, message):
         if message.topic == '/Devices/adc_agent/QueryConfig':  # query config
             self.send_config()
-        elif message.topic == '/Test' or message.topic == '/Try':  # suck or release
-            message = "00000,CHECK_ANALOG#"
+        elif message.topic == '/Test' or message.topic == '/Try':  # supposed to follow some topics from robot
+            message = "00000,QUERY_ANALOG#"
             message = message.encode()
             if self.sock:
                 # send cmd
@@ -317,22 +321,60 @@ class Vacuum:
             try:
                 self.logger.info(f"Starting to connecting to {self.target_address}:{p}.")
                 self.sock.connect((self.target_address, p))
-                # todo: takes 20s when fail, can modify timeout
-                self.port_in_use = p
-                break
+                if self.is_socket_connected():
+                    self.logger.info(f"connected! prot = {p}.")
+                    self.port_in_use = p
+                    break
+                else:
+                    self.sock = None
+                    if not self.socket_init():
+                        self.logger.error("Failed to reinit socket in this trial.")
+                        return False
+                    self.logger.info(f"Port {p} fail, start next trial.")
             except socket.error:
                 self.logger.error(f"Port {p} fail.")
         if self.port_in_use == 0:
-            self.logger.error("All port failed.")
+            self.logger.error("All ports failed.")
             return False
-        self.logger.info(f"Connect to {self.target_address}:{self.port_in_use}.")
+        self.logger.info(f"Connected to {self.target_address}:{self.port_in_use}.")
         return True
 
     def is_socket_connected(self) -> bool:
         # check self.sock before call this
+        if not self.sock:
+            self.logger.error("Socket not exist when checking connection.")
+            return False
+        message = "00000,QUERY_IO#"
+        message = message.encode()
         try:
-            self.sock.sendall(b'')
-            return True
+            _, ready_to_write, _ = select.select([], [self.sock], [], self.socket_timeout)
+            if ready_to_write:
+                try:
+                    self.sock.sendall(message)
+                except Exception as e:
+                    self.logger.error(f"Failed to send check conn cmd: {e}")
+                    return False
+            else:
+                self.logger.error("Socket unable to write when check conn cmd, timeout.")
+                return False
+
+            ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
+            if ready_to_read:
+                try:
+                    data = self.sock.recv(1024)
+                    self.logger.info("Check conn reply received.")
+                except Exception as e:
+                    self.logger.error(f"Failed to receive check conn reply: {e}")
+                    return False
+            else:
+                self.logger.error("Socket unable to read when check conn reply, timeout.")
+                return False
+            data_str = data.decode('UTF-8')
+            if ("UPDATE_IO" in data_str) and (data_str.endswith('#')):
+                return True
+            else:
+                self.logger.error(f"Received reply is {data_str}.")
+                return False
         except socket.error:
             return False
 
@@ -386,6 +428,7 @@ class Vacuum:
     def scheduled_report(self):
         self.logger.info("Thread start.")
         message = "00000,QUERY_ANALOG#"
+        # message = "00000,CLEAR_ERROR"
         message = message.encode()
         last_time = time.time()
 
@@ -419,11 +462,9 @@ class Vacuum:
                 except Exception as e:
                     self.logger.error(f"Failed to receive analog: {e}")
                     continue
-                    # break
             else:
                 self.logger.error("Socket unable to read, timeout.")
                 continue
-                # break
 
             self.logger.info(f"DATA = {data}.")
             self.update_json(data)  # update json
