@@ -12,7 +12,6 @@ import psutil
 import atexit
 
 
-# todo: 1.remove reconnect from socket_send to outer layer 2.compare on_message and s_report(not important)
 class Vacuum:
     def __init__(self):
         self.init_success = False
@@ -65,12 +64,13 @@ class Vacuum:
             self.update_state = False
             self.sock = None
             self.mqtt_client = None
+            self.mqtt_connect_state = False
             self.scheduled_report_ready = False
             self.scheduled_report_thread = None
             self.maincomponent_id = None
             self.subcomponent_id = "VacuumMonitor"
             self.protocol_sn = 1
-            if (not self.get_local_ip()) or (self.maincomponent_id is None):
+            if (not self.get_maincomponent_id()) or (self.maincomponent_id is None):
                 self.logger.error("Can not find local address.")
                 return
             else:
@@ -141,7 +141,7 @@ class Vacuum:
         self.init_success = True
         self.logger.info("All init done.")
 
-    def get_local_ip(self) -> bool:
+    def get_maincomponent_id(self) -> bool:
         for interface, addrs in psutil.net_if_addrs().items():
             for addr in addrs:
                 if addr.address == '10.0.1.200':
@@ -207,18 +207,18 @@ class Vacuum:
         return True
 
     def mqtt_connect(self) -> bool:
-        # connect
+        # set connect (does not really connect)
         retry_times = 0
         while retry_times < self.connect_retry_times:
             retry_times += 1
             try:
-                self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, 60)
-                # todo: may need to check if connection is success
-                self.logger.info("Connect to broker success.")
+                self.mqtt_client.connect("localhost", self.mqtt_port, 60)
+                self.logger.info("Set parameters of mqtt connection.")
                 break
             except Exception as e:
-                self.logger.error(f"Failed to connect to the broker: {e}.")
+                self.logger.error(f"Failed to set mqtt connection parameters: {e}.")
                 if retry_times == self.connect_retry_times:
+                    self.logger.error(f"Set mqtt connection parameters failed {self.connect_retry_times} time, exit.")
                     return False
 
         # subscribe
@@ -240,6 +240,7 @@ class Vacuum:
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
+            self.mqtt_connect_state = True
             self.logger.info("Mqtt connected successfully.")
         else:
             self.logger.error(f"Mqtt connection failed with error code {rc}.")
@@ -266,9 +267,7 @@ class Vacuum:
             sn = f'{self.protocol_sn:05d}'
             message = sn + ",QUERY_ANALOG#"
             message = message.encode()
-            self.protocol_sn += 1
-            if self.protocol_sn >= 100000:
-                self.protocol_sn = 1
+            self.sn_add()  # can move to other place, depends on whether only add when send success
             if self.sock:
                 # send cmd
                 _, ready_to_write, _ = select.select([], [self.sock], [], self.socket_timeout)
@@ -285,6 +284,8 @@ class Vacuum:
                     self.logger.error("Socket unable to write, timeout.")
                     return
 
+                time.sleep(0.1)
+
                 # recv reply
                 ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
                 if ready_to_read[0]:
@@ -299,7 +300,9 @@ class Vacuum:
                     return
 
                 # handle data
+                self.logger.info(f"DATA = {data}.")
                 self.update_json(data, sn)
+
                 if self.update_state:
                     try:
                         with open('/vault/VacuumMonitor/Analog.json', 'r') as f:
@@ -332,7 +335,9 @@ class Vacuum:
                     self.port_in_use = p
                     break
                 else:
-                    self.sock = None
+                    if self.sock:
+                        self.sock.close()
+                        self.sock = None
                     if not self.socket_init():
                         self.logger.error("Failed to reinit socket in this trial.")
                         return False
@@ -439,19 +444,40 @@ class Vacuum:
 
     def scheduled_report(self):
         self.logger.info("Thread start.")
+        send_failed_count = 0
+        socket_recreate_flag = False
+        publish_failed_count = 0
         last_time = time.time()
-        while self.scheduled_report_ready and self.sock and self.mqtt_client:
+
+        while self.scheduled_report_ready and self.mqtt_client:
+            if publish_failed_count >= self.connect_retry_times:
+                self.logger.error(f"Publish failed {self.connect_retry_times} times, report thread will terminate.")
+                break
+            if send_failed_count >= self.connect_retry_times or socket_recreate_flag:
+                self.logger.info(f"Will start reconnect.")
+                if self.sock:
+                    self.sock.close()
+                self.sock = None
+                if (not self.socket_init()) or (not self.socket_connect_with_retry()):
+                    self.logger.error("Connect retry failed, report thread will terminate.")
+                    break
+                self.logger.info("Socket recreated.")
+                send_failed_count = 0
+                socket_recreate_flag = False
+            if not self.sock:
+                self.logger.error("Socket client not exist, will re create.")
+                socket_recreate_flag = True
+                continue
+
             while time.time()-last_time <= self.report_interval:
-                time.sleep(1)
+                time.sleep(0.5)
             last_time = time.time()
 
             # setup cmd
             sn = f'{self.protocol_sn:05d}'
             message = sn + ",QUERY_ANALOG#"
             message = message.encode()
-            self.protocol_sn += 1
-            if self.protocol_sn >= 100000:
-                self.protocol_sn = 1
+            self.sn_add()  # can move to other place, depends on whether only add when send success
 
             # send cmd
             _, ready_to_write, _ = select.select([], [self.sock], [], self.socket_timeout)
@@ -460,12 +486,16 @@ class Vacuum:
                     if self.socket_send(message):
                         self.logger.info("Command sent.")
                     else:
-                        self.logger.error("Failed to send command.")
+                        send_failed_count += 1
+                        self.logger.error(f"Failed to send command {send_failed_count} times.")
+                        continue
                 except Exception as e:
-                    self.logger.error(f"Failed to send command: {e}")
+                    send_failed_count += 1
+                    self.logger.error(f"Failed to send command {send_failed_count} times: {e}.")
                     continue
             else:
-                self.logger.error("Socket unable to write, timeout.")
+                send_failed_count += 1
+                self.logger.error(f"Socket unable to write {send_failed_count} times, timeout.")
                 continue
             time.sleep(0.1)
 
@@ -476,13 +506,17 @@ class Vacuum:
                     data = self.sock.recv(1024)
                     self.logger.info("Reply received.")
                 except Exception as e:
-                    self.logger.error(f"Failed to receive analog: {e}")
+                    send_failed_count += 1
+                    self.logger.error(f"Failed to receive analog {send_failed_count} times: {e}")
                     continue
             else:
-                self.logger.error("Socket unable to read, timeout.")
+                send_failed_count += 1
+                self.logger.error(f"Socket unable to read {send_failed_count} times, timeout.")
                 continue
 
             self.logger.info(f"DATA = {data}.")
+            if data:
+                send_failed_count = 0
             self.update_json(data, sn)  # update json
 
             if self.update_state:
@@ -493,16 +527,22 @@ class Vacuum:
                             try:
                                 self.mqtt_client.publish(self.analog_topic, json_data)
                                 self.logger.info("Analog message published.")
+                                publish_failed_count = 0
                             except Exception as e:
-                                self.logger.error(f"Failed to publish message: {e}")
+                                publish_failed_count += 1
+                                self.logger.error(f"Failed to publish message {publish_failed_count} times: {e}")
                         else:
                             self.logger.error("Mqtt client not exist.")
+                            break
                 except FileNotFoundError:
                     self.logger.error("The file 'Analog.json' was not found.")
+                    break
                 except json.JSONDecodeError:
                     self.logger.error("An error occurred while decoding the JSON.")
+                    break
                 except Exception as e:
-                    self.logger.error(f"An unexpected error occurred: {e}")
+                    publish_failed_count += 1
+                    self.logger.error(f"An unexpected error occurred: {e}, trial {publish_failed_count}.")
 
         self.logger.info("Thread end.")
         self.scheduled_report_ready = False
@@ -512,21 +552,18 @@ class Vacuum:
             self.logger.error("Socket client not exist.")
             return False
 
-        for reconnect_retry_times in range(self.connect_retry_times):
-            for send_retry_times in range(self.connect_retry_times):
-                try:
-                    self.sock.sendall(message)
-                    return True
-                except socket.error as e:
-                    self.logger.error(f"Socket error: {e}, try {send_retry_times} times.")
-                    time.sleep(1)
-                except Exception as e:
-                    self.logger.error(f"Failed to send command: {e}, try {send_retry_times} times.")
-                    time.sleep(1)
-            self.logger.error(f"Retry {self.connect_retry_times} times.")
-            self.sock.close()
-            self.connect_to_target()
-        self.logger.error(f"Reconnect failed {self.connect_retry_times} times, send fail")
+        for send_retry_times in range(self.connect_retry_times):
+            try:
+                self.sock.sendall(message)
+                return True
+            except socket.error as e:
+                self.logger.error(f"Socket error: {e}, trial {send_retry_times}.")
+                time.sleep(0.1)
+            except Exception as e:
+                self.logger.error(f"Failed to send command: {e}, trial {send_retry_times}.")
+                time.sleep(0.1)
+
+        self.logger.error(f"Sending failed {self.connect_retry_times} times.")
         return False
 
     def start_scheduled_report(self):
@@ -540,8 +577,18 @@ class Vacuum:
 
     def start(self):
         if self.mqtt_client:
-            self.mqtt_client.loop_start()
-            self.logger.info("Mqtt loop started.")
+            try:
+                self.mqtt_client.loop_start()
+                self.logger.info("Mqtt loop started.")
+            except Exception as e:
+                self.logger.error(f"Mqtt loop start fail: {e}.")
+                return
+            s_time = time.time()
+            while not self.mqtt_connect_state:
+                if time.time()-s_time > self.socket_timeout:
+                    self.logger.error("Mqtt client failed to connect to broker, timeout.")
+                    return
+                time.sleep(0.1)
             for i in range(0, self.connect_retry_times):
                 if self.send_config():
                     break
@@ -556,8 +603,14 @@ class Vacuum:
             time.sleep(10)
 
     def clean_up(self):
-        self.sock.close()
+        if self.sock:
+            self.sock.close()
         self.sock = None
+
+    def sn_add(self):
+        self.protocol_sn += 1
+        if self.protocol_sn >= 100000:
+            self.protocol_sn = 1
 
 
 if __name__ == '__main__':
