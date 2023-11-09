@@ -340,9 +340,8 @@ class Vacuum:
         return True
 
     def is_socket_connected(self) -> bool:
-        # check self.sock before call this
         if not self.sock:
-            self.logger.error("Socket not exist when checking connection.")
+            self.logger.error("Socket not exist，checking connection.")
             return False
         message = "00000,QUERY_IO#"
         message = message.encode()
