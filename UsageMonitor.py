@@ -12,7 +12,7 @@ from typing import Optional
 
 
 class UsageMonitor:
-    CLASS_NAME = '/UsageMonitor'
+    CLASS_NAME = 'UsageMonitor'
     REPORTER_NAME = 'ReportThread'
     CONFIG_PATH = '/vault/UsageMonitor/config/UsageMonitor_config.json'
 
@@ -21,33 +21,35 @@ class UsageMonitor:
 
         self.logger: Optional[logging.Logger] = None
         self.loaded_config = None
+        self.mqtt_client = None
+        self.mqtt_connect_state = False
+        self.scheduled_report_ready = False
+        self.scheduled_report_thread = None
+        self.config_msg = None
 
         self.station_type = None
         self.station_number = None
-        self.mqtt_client = None
-        self.scheduled_report_ready = False
-        self.scheduled_report_thread = None
         self.system = None
         self.total_disk = 0
         self.cpu_usage = 0
         self.ram_usage = 0
         self.disk_usage = 0
         self.pc_model = "Unknown Model"
-        self.json_data = None
         self.ip_address = None
         self.cpu_message = None
         self.ram_message = None
-        self.disk_usage = None
+        self.disk_message = None
         self.maincomponent_id = None
-        self.subcomponent_id = self.CLASS_NAME
-        self.mqtt_connect_state = False
+        self.subcomponent_id = '/' + self.CLASS_NAME
+        self.config_topic = None
+        self.analog_topic = None
 
         self.fixture_ip = "10.0.1."
         self.local_ip = "10.0.1.200"
         self.mqtt_host = "localhost"
         self.mqtt_port = 1883
         self.mqtt_keepalive = 60
-        self.configmsg_path = "Config2Send_Vacuum.json"
+        self.configmsg_path = "/vault/UsageMonitor/config/Config2Send_Vacuum.json"
         self.station_path = "/vault/ADCAgent/dst/setting/adc_agent_register.json"
         self.fixture_path = "/vault/data_collection/test_station_config/gh_station_info.json"
         self.report_interval = 10
@@ -55,15 +57,6 @@ class UsageMonitor:
         self.publish_fail_tolerance = 5
         self.query_config_topic = "/Devices/adc_agent/QueryConfig"
 
-        self.config_topic = None
-        self.analog_topic = None
-
-        self.system = None
-        self.config_msg = None
-
-        self.cpu_message = None
-        self.ram_message = None
-        self.disk_message = None
         try:
             self.init_logger()
             self.logger.info("*************************")
@@ -87,7 +80,8 @@ class UsageMonitor:
 
     def init_logger(self):
         LOGGER_NAME = "UsageMonitorLogger"
-        LOG_PATH = '/vault/UsageMonitor/log' + self.CLASS_NAME
+        LOG_PATH = '/vault/UsageMonitor/log'
+        LOG_HEADER = LOG_PATH + '/' + self.CLASS_NAME
         LOG_UPDATE_TIME = 'midnight'
         LOG_SAVE_NUMBER = 30
         LOG_NAME_FORMAT = "%Y-%m-%d.log"
@@ -104,14 +98,14 @@ class UsageMonitor:
                 print(f"Can not create log file: {e}, exit.")
                 raise ValueError(f"Logger initialization failed")
         try:
-            handler = TimedRotatingFileHandler(LOG_PATH, when=LOG_UPDATE_TIME, backupCount=LOG_SAVE_NUMBER)
+            handler = TimedRotatingFileHandler(LOG_HEADER, when=LOG_UPDATE_TIME, backupCount=LOG_SAVE_NUMBER)
             handler.suffix = LOG_NAME_FORMAT
             formatter = logging.Formatter(LOG_FORMAT)
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
         except Exception as e:
             print(f"Logger error: {e}, exit.")
-            raise ValueError(f"Logger initialization failed")
+            raise ValueError(f"Logger initialization failed: {e}")
 
     def load_config(self):
         try:
@@ -136,7 +130,7 @@ class UsageMonitor:
                 self.mqtt_host = self.loaded_config.get('broker_host')
                 self.mqtt_port = int(self.loaded_config.get('broker_port'))
                 self.mqtt_keepalive = int(self.loaded_config.get('mqtt_keepalive'))
-                self.configmsg_path = self.loaded_config.get('configmsg_path')
+                self.configmsg_path = self.loaded_config.get('config_path')
                 self.station_path = self.loaded_config.get('station_path')
                 self.fixture_path = self.loaded_config.get('fixture_path')
                 self.report_interval = int(self.loaded_config.get('report_interval'))
@@ -163,6 +157,7 @@ class UsageMonitor:
         GH_INFO_KEY = 'ghinfo'
         STATION_NUMBER_KEY = 'STATION_NUMBER'
         STATION_TYPE_KEY = 'STATION_TYPE'
+
         for interface, addrs in psutil.net_if_addrs().items():
             for addr in addrs:
                 if addr.address == self.local_ip:  # case cam station

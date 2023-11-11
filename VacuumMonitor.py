@@ -15,31 +15,18 @@ from typing import Optional
 
 class Vacuum:
     # define class constant
-    CLASS_NAME = '/VacuumMonitor'
+    CLASS_NAME = 'VacuumMonitor'
     REPORTER_NAME = 'ReportThread'
-    LOG_PATH = '/vault/VacuumMonitor/log'
     CONFIG_PATH = '/vault/VacuumMonitor/config/vacuum_config.json'
-    CELL_TYPE = 'cell_type'
-    COMMA = ','
-    SLASH = '/'
-    # logger
-    LOGGER_NAME = 'VacuumLogger'
-    LOG_UPDATE_TIME = 'midnight'
-    LOG_SAVE_NUMBER = 30
-    LOG_NAME_FORMAT = "%Y-%m-%d.log"
-    LOG_FORMAT = '%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
+
     # message json keys
     VALUE_KEY = 'value'
     INTERVAL_KEY = 'interval'
     TIMESTAMP_KEY = 'timestamp'
-    # mqtt topics
-    ZERO_SN = '00000,'
-    TOPIC_HEADER = "/Devices/"
-    MAIN_ID_FRONT = "work_station_"
-    CONFIG_TOPIC_END = '/Config'
-    ANALOG_TOPIC_END = '/Analog'
 
     # plc commands
+    COMMA = ','
+    ZERO_SN = '00000,'
     CHECK_CMD = ',QUERY_IO#'
     CHECK_RESP = ',UPDATE_IO,'
     ANALOG_CMD = ',QUERY_ANALOG#'
@@ -65,7 +52,7 @@ class Vacuum:
         self.scheduled_report_ready = False
         self.scheduled_report_thread = None
         self.maincomponent_id = None
-        self.subcomponent_id = self.CLASS_NAME
+        self.subcomponent_id = '/' + self.CLASS_NAME
         self.protocol_sn = 1
         self.config_topic = None
         self.analog_topic = None
@@ -105,20 +92,27 @@ class Vacuum:
             raise
 
     def init_logger(self):
+        LOG_PATH = '/vault/VacuumMonitor/log'
+        LOGGER_NAME = 'VacuumLogger'
+        LOG_HEADER = LOG_PATH + '/' + self.CLASS_NAME
+        LOG_UPDATE_TIME = 'midnight'
+        LOG_SAVE_NUMBER = 30
+        LOG_NAME_FORMAT = "%Y-%m-%d.log"
+        LOG_FORMAT = '%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
         if self.logger is not None:
             return
-        self.logger = logging.getLogger(self.LOGGER_NAME)
+        self.logger = logging.getLogger(LOGGER_NAME)
         self.logger.setLevel(logging.INFO)
-        if not os.path.exists(self.LOG_PATH):
+        if not os.path.exists(LOG_PATH):
             try:
-                os.makedirs(self.LOG_PATH)
+                os.makedirs(LOG_PATH)
             except Exception as e:
                 print(f"Can not create log file: {e}, exit.")
                 raise ValueError(f"Logger initialization failed")
         try:
-            handler = TimedRotatingFileHandler(self.LOG_PATH + self.CLASS_NAME, when=self.LOG_UPDATE_TIME, backupCount=self.LOG_SAVE_NUMBER)
-            handler.suffix = self.LOG_NAME_FORMAT
-            formatter = logging.Formatter(self.LOG_FORMAT)
+            handler = TimedRotatingFileHandler(LOG_HEADER, when=LOG_UPDATE_TIME, backupCount=LOG_SAVE_NUMBER)
+            handler.suffix = LOG_NAME_FORMAT
+            formatter = logging.Formatter(LOG_FORMAT)
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
         except Exception as e:
@@ -138,6 +132,9 @@ class Vacuum:
             self.logger.error(f"An unexpected error occurred when loading config file: {e}, will use default", exc_info=True)
 
     def init_parameters(self):
+        TOPIC_HEADER = "/Devices/"
+        CONFIG_TOPIC_END = '/Config'
+        ANALOG_TOPIC_END = '/Analog'
         try:
             if self.loaded_config is not None:
                 self.local_ip = self.loaded_config.get('local_ip')
@@ -159,8 +156,8 @@ class Vacuum:
                 raise ValueError(f"Parameters initialization failed.")
             else:
                 self.logger.info("Load station info success.")
-            self.config_topic = self.TOPIC_HEADER + self.maincomponent_id + self.subcomponent_id + self.CONFIG_TOPIC_END
-            self.analog_topic = self.TOPIC_HEADER + self.maincomponent_id + self.subcomponent_id + self.ANALOG_TOPIC_END
+            self.config_topic = TOPIC_HEADER + self.maincomponent_id + self.subcomponent_id + CONFIG_TOPIC_END
+            self.analog_topic = TOPIC_HEADER + self.maincomponent_id + self.subcomponent_id + ANALOG_TOPIC_END
             self.logger.info(f"config_topic: {self.config_topic}")
             self.logger.info(f"analog_topic: {self.analog_topic}")
         except Exception as e:
@@ -184,14 +181,16 @@ class Vacuum:
             raise ValueError(f"Load config message failed: {e}")
 
     def get_maincomponent_id(self) -> bool:
+        CELL_TYPE = 'cell_type'
+        MAIN_ID_FRONT = "work_station_"
         for interface, addrs in psutil.net_if_addrs().items():
             for addr in addrs:
                 if addr.address == self.local_ip:
                     try:
                         with open(self.station_path, 'r') as f:
                             data = json.load(f)
-                            if self.CELL_TYPE in data:
-                                self.maincomponent_id = self.MAIN_ID_FRONT + data[self.CELL_TYPE]
+                            if CELL_TYPE in data:
+                                self.maincomponent_id = MAIN_ID_FRONT + data[CELL_TYPE]
                                 return True
                             else:
                                 self.logger.error("Can not find cell type in register.json.")
@@ -309,7 +308,7 @@ class Vacuum:
             return False
         return True
 
-    def on_message(self, client, userdata, message):
+    def on_message(self, client, _, message):
         if message.topic == self.query_config_topic:
             self.send_config()
         elif message.topic == '/Test' or message.topic == '/Try':  # supposed to follow some topics from robot, tbd
