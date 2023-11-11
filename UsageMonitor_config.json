@@ -1,7 +1,12 @@
 {
-    "broker": "10.0.1.200",
+    "fixture_ip": "10.0.1.",
+    "local_ip": "10.0.1.200",
+    "broker_host": "localhost",
     "broker_port": "1883",
+    "mqtt_keepalive": "60",
     "config_path": "/vault/UsageMonitor/config/Config2Send_UsageMonitor.json",
+    "station_path": "/vault/ADCAgent/dst/setting/adc_agent_register.json",
+    "fixture_path": "/vault/data_collection/test_station_config/gh_station_info.json",
     "report_interval": "10",
     "connect_retry_times": "3",
     "publish_fail_tolerance": "5",

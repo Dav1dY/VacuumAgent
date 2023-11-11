@@ -15,11 +15,13 @@ from typing import Optional
 
 class Vacuum:
     # define class constant
-    CLASS_NAME = 'VacuumMonitor'
+    CLASS_NAME = '/VacuumMonitor'
     REPORTER_NAME = 'ReportThread'
     LOG_PATH = '/vault/VacuumMonitor/log'
     CONFIG_PATH = '/vault/VacuumMonitor/config/vacuum_config.json'
     CELL_TYPE = 'cell_type'
+    COMMA = ','
+    SLASH = '/'
     # logger
     LOGGER_NAME = 'VacuumLogger'
     LOG_UPDATE_TIME = 'midnight'
@@ -36,8 +38,7 @@ class Vacuum:
     MAIN_ID_FRONT = "work_station_"
     CONFIG_TOPIC_END = '/Config'
     ANALOG_TOPIC_END = '/Analog'
-    COMMA = ','
-    SLASH = '/'
+
     # plc commands
     CHECK_CMD = ',QUERY_IO#'
     CHECK_RESP = ',UPDATE_IO,'
@@ -64,7 +65,7 @@ class Vacuum:
         self.scheduled_report_ready = False
         self.scheduled_report_thread = None
         self.maincomponent_id = None
-        self.subcomponent_id = self.SLASH + self.CLASS_NAME
+        self.subcomponent_id = self.CLASS_NAME
         self.protocol_sn = 1
         self.config_topic = None
         self.analog_topic = None
@@ -115,7 +116,7 @@ class Vacuum:
                 print(f"Can not create log file: {e}, exit.")
                 raise ValueError(f"Logger initialization failed")
         try:
-            handler = TimedRotatingFileHandler(self.LOG_PATH + '/' + self.CLASS_NAME, when=self.LOG_UPDATE_TIME, backupCount=self.LOG_SAVE_NUMBER)
+            handler = TimedRotatingFileHandler(self.LOG_PATH + self.CLASS_NAME, when=self.LOG_UPDATE_TIME, backupCount=self.LOG_SAVE_NUMBER)
             handler.suffix = self.LOG_NAME_FORMAT
             formatter = logging.Formatter(self.LOG_FORMAT)
             handler.setFormatter(formatter)
@@ -259,7 +260,7 @@ class Vacuum:
             retry_times += 1
             try:
                 self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, self.mqtt_keepalive)
-                self.logger.info("Set parameters of mqtt connection.")
+                self.logger.info("Set mqtt connection parameters.")
                 break
             except Exception as e:
                 self.logger.error(f"Failed to set mqtt connection parameters: {e}.")
@@ -269,7 +270,7 @@ class Vacuum:
         # subscribe
         (subscribe_result, mid) = self.mqtt_client.subscribe(self.query_config_topic)
         # todo: add more topics to get vacuum generator state
-        if subscribe_result == 0:
+        if subscribe_result == mqtt.MQTT_ERR_SUCCESS:
             self.logger.info("subscribe success.")
         else:
             self.logger.error(f"Failed to subscribe. Result code: {subscribe_result}")

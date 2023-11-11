@@ -8,181 +8,267 @@ import subprocess
 import threading
 import psutil
 import os
-import pyvisa
-from pyvisa import ResourceManager, constants
+from typing import Optional
 
 
 class UsageMonitor:
+    CLASS_NAME = '/UsageMonitor'
+    CONFIG_PATH = '/vault/UsageMonitor/config/UsageMonitor_config.json'
+
     def __init__(self):
         self.init_success = False
 
-        self.logger = logging.getLogger('UsageMonitorLogger')
+        self.logger: Optional[logging.Logger] = None
+        self.loaded_config = None
+
+        self.station_type = None
+        self.station_number = None
+        self.mqtt_client = None
+        self.scheduled_report_ready = False
+        self.scheduled_report_thread = None
+        self.system = None
+        self.total_disk = 0
+        self.cpu_usage = 0
+        self.ram_usage = 0
+        self.disk_usage = 0
+        self.pc_model = "Unknown Model"
+        self.json_data = None
+        self.ip_address = None
+        self.cpu_message = None
+        self.ram_message = None
+        self.disk_usage = None
+        self.maincomponent_id = None
+        self.subcomponent_id = self.CLASS_NAME
+
+        self.fixture_ip = "10.0.1."
+        self.local_ip = "10.0.1.200"
+        self.mqtt_host = "localhost"
+        self.mqtt_port = 1883
+        self.mqtt_keepalive = 60
+        self.configmsg_path = "Config2Send_Vacuum.json"
+        self.station_path = "/vault/ADCAgent/dst/setting/adc_agent_register.json"
+        self.fixture_path = "/vault/data_collection/test_station_config/gh_station_info.json"
+        self.report_interval = 10
+        self.connect_retry_times = 3
+        self.publish_fail_tolerance = 5
+        self.query_config_topic = "/Devices/adc_agent/QueryConfig"
+
+        self.config_topic = None
+        self.analog_topic = None
+
+        self.system = None
+        self.config_msg = None
+
+        self.cpu_message = None
+        self.ram_message = None
+        self.disk_message = None
+        try:
+            self.init_logger()
+            self.logger.info("*************************")
+            self.logger.info("Initializing.")
+            self.load_config()
+            self.init_parameters()
+            self.get_system_name()
+            self.get_pc_model()
+            self.get_total_disk_size()
+            self.load_configmsg()
+            self.json_data_init()
+            self.mqtt_client_init()
+            self.mqtt_connect()
+            self.scheduled_report_init()
+            self.scheduled_report_ready = True
+            self.init_success = True
+            self.logger.info("All init done.")
+        except Exception as e:
+            self.logger.error(f"Initialization failed : {e}.")
+            raise
+
+    def init_logger(self):
+        LOGGER_NAME = "UsageMonitorLogger"
+        LOG_PATH = '/vault/UsageMonitor/log' + self.CLASS_NAME
+        LOG_UPDATE_TIME = 'midnight'
+        LOG_SAVE_NUMBER = 30
+        LOG_NAME_FORMAT = "%Y-%m-%d.log"
+        LOG_FORMAT = '%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
+
+        if self.logger is not None:
+            return
+        self.logger = logging.getLogger(LOGGER_NAME)
         self.logger.setLevel(logging.INFO)
-
-        dir_name = '/vault/UsageMonitor/log'
-        if not os.path.exists(dir_name):
-            # noinspection PyBroadException
+        if not os.path.exists(LOG_PATH):
             try:
-                os.makedirs(dir_name)
-            except Exception:
-                print("Can not create log file, exit.")
-                return
-        # noinspection PyBroadException
+                os.makedirs(LOG_PATH)
+            except Exception as e:
+                print(f"Can not create log file: {e}, exit.")
+                raise ValueError(f"Logger initialization failed")
         try:
-            handler = TimedRotatingFileHandler('/vault/UsageMonitor/log/UsageMonitor', when='midnight', backupCount=30)
-        except Exception:
-            print("Logger error, exit.")
-            return
+            handler = TimedRotatingFileHandler(LOG_PATH, when=LOG_UPDATE_TIME, backupCount=LOG_SAVE_NUMBER)
+            handler.suffix = LOG_NAME_FORMAT
+            formatter = logging.Formatter(LOG_FORMAT)
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+        except Exception as e:
+            print(f"Logger error: {e}, exit.")
+            raise ValueError(f"Logger initialization failed")
 
-        handler.suffix = "%Y-%m-%d.log"
-        formatter = logging.Formatter('%(asctime)s -  %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
-        self.logger.addHandler(handler)
-        self.logger.info("*************************")
-        self.logger.info("Initializing.")
-
-        # load config file
-        self.loaded_data = None
-        # noinspection PyBroadException
+    def load_config(self):
         try:
-            with open('/vault/UsageMonitor/config/UsageMonitor_config.json', 'r') as f:
-                self.loaded_data = json.load(f)
-            self.logger.info("UsageMonitor_config load success.")
+            with open(self.CONFIG_PATH, 'r') as f:
+                self.loaded_config = json.load(f)
+            self.logger.info("vacuum_config load success.")
         except FileNotFoundError:
-            self.logger.error("UsageMonitor_config was not found.")
-            return
+            self.logger.error("vacuum_config was not found, will use default.")
         except json.JSONDecodeError:
-            self.logger.error("An error occurred while decoding the JSON.")
-            return
-        except Exception:
-            self.logger.error("An unexpected error occurred: ", exc_info=True)
-            return
+            self.logger.error("An error occurred decoding the JSON, will use default.")
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred loading config file: {e}, will use default", exc_info=True)
 
-        # init parameters
-        # noinspection PyBroadException
+    def init_parameters(self):
+        TOPIC_HEADER = "/Devices/"
+        CONFIG_TOPIC_END = '/Config'
+        ANALOG_TOPIC_END = '/Analog'
         try:
-            self.station_type = None
-            self.station_number = None
-            self.client = None
-            self.scheduled_report_ready = False
-            self.scheduled_report_thread = None
-            self.system = None
-            self.total_disk = 0
-            self.cpu_usage = 0
-            self.ram_usage = 0
-            self.disk_usage = 0
-            self.pc_model = "Unknown Model"
-            self.json_data = None
-            self.ip_address = None
-            self.cpu_message = None
-            self.ram_message = None
-            self.disk_usage = None
-            self.maincomponent_id = None
-
-            for interface, addrs in psutil.net_if_addrs().items():
-                for addr in addrs:
-                    if addr.address == '10.0.1.200':
-                        try:
-                            with open('/vault/ADCAgent/dst/setting/adc_agent/register.json', 'r') as f:
-                                data = json.load(f)
-                                if 'cell_type' in data:
-                                    self.maincomponent_id = "work_station_" + data['cell_type']
-                                    break
-                                else:
-                                    self.logger.error("Can not find cell type in register.json.")
-                                    return
-                        except Exception as e:
-                            self.logger.error(f"Failed to load adc_agent/register.json : {e}.")
-                            return
-                    elif addr.address.startswith('10.0.1.'):
-                        try:
-                            with open('/vault/data_collection/test_station_config/gh_station_info.json', 'r') as f:
-                                data = json.load(f)
-                                if 'ghinfo' in data and 'STATION_NUMBER' in data['ghinfo']:
-                                    self.station_number = data['ghinfo']['STATION_NUMBER']
-                                else:
-                                    self.logger.error('Cannot find STATION_NUMBER.')
-                                    return
-                                if 'ghinfo' in data and 'STATION_TYPE' in data['ghinfo']:
-                                    self.station_type = data['ghinfo']['STATION_TYPE']
-                                else:
-                                    self.logger.error('Cannot find STATION_TYPE.')
-                                    return
-                        except FileNotFoundError:
-                            self.logger.error('File gh_station_info.json not found.')
-                            return
-                        except json.JSONDecodeError:
-                            self.logger.error('An error occurred while decoding the JSON file.')
-                            return
-                        except Exception as e:
-                            self.logger.error(f"An error occurred : {e}.")
-                            return
-                        self.maincomponent_id = "work_station_" + self.station_type + "_" + self.station_number
-                        break
-            if self.maincomponent_id is None:
+            if self.loaded_config is not None:
+                self.fixture_ip = self.loaded_config.get('fixture_ip')
+                self.local_ip = self.loaded_config.get('local_ip')
+                self.mqtt_host = self.loaded_config.get('broker_host')
+                self.mqtt_port = int(self.loaded_config.get('broker_port'))
+                self.mqtt_keepalive = int(self.loaded_config.get('mqtt_keepalive'))
+                self.configmsg_path = self.loaded_config.get('configmsg_path')
+                self.station_path = self.loaded_config.get('station_path')
+                self.fixture_path = self.loaded_config.get('fixture_path')
+                self.report_interval = int(self.loaded_config.get('report_interval'))
+                self.connect_retry_times = int(self.loaded_config.get('connect_retry_times'))
+                self.publish_fail_tolerance = int(self.loaded_config.get('publish_fail_tolerance'))
+                self.query_config_topic = self.loaded_config.get('query_config_topic')
+            if (not self.get_maincomponent_id()) or (self.maincomponent_id is None):
                 self.logger.error("Can not find local address.")
-                return
+                raise ValueError(f"Parameters initialization failed.")
             else:
                 self.logger.info("Load station info success.")
-            subcomponent = "UsageMonitor"
-            self.config_topic = "/Devices/" + self.maincomponent_id + "/" + subcomponent + "/" + "Config"
-            self.analog_topic = "/Devices/" + self.maincomponent_id + "/" + subcomponent + "/" + "Analog"
+            self.config_topic = TOPIC_HEADER + self.maincomponent_id + self.subcomponent_id + CONFIG_TOPIC_END
+            self.analog_topic = TOPIC_HEADER + self.maincomponent_id + self.subcomponent_id + ANALOG_TOPIC_END
             self.logger.info(f"config_topic: {self.config_topic}")
             self.logger.info(f"analog_topic: {self.analog_topic}")
-
-            if self.loaded_data is None:
-                self.query_config_topic = "/Devices/adc_agent/QueryConfig"
-                self.broker = "10.0.1.200"
-                self.port = 1883
-                self.config_path = "Config2Send_UsageMonitor.json"
-                self.report_interval = 5
-                self.connect_retry_times = 3
-                self.publish_fail_tolerance = 5
-            else:
-                self.query_config_topic = self.loaded_data.get('query_config_topic', "/Devices/adc_agent/QueryConfig")
-                self.broker = self.loaded_data.get('broker', "10.0.1.200")
-                self.port = int(self.loaded_data.get('broker_port', "1883"))
-                self.config_path = self.loaded_data.get('config_path', "Config2Send_Vacuum.json")
-                self.report_interval = int(self.loaded_data.get('report_interval', "5"))
-                self.connect_retry_times = int(self.loaded_data.get('connect_retry_times', "3"))
-                self.publish_fail_tolerance = int(self.loaded_data.get('publish_fail_tolerance', "5"))
-        except Exception:
-            self.logger.error("Initialize parameters fail.")
-            return
+        except Exception as e:
+            self.logger.error(f"Initialize parameters fail: {e}.")
+            raise ValueError(f"Parameters initialization failed: {e}")
         self.logger.info("All parameters loaded success.")
 
-        # get system name
+    def get_maincomponent_id(self) -> bool:
+        CELL_TYPE = 'cell_type'
+        MAIN_ID_FRONT = "work_station_"
+        GH_INFO_KEY = 'ghinfo'
+        STATION_NUMBER_KEY = 'STATION_NUMBER'
+        STATION_TYPE_KEY = 'STATION_TYPE'
+        for interface, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.address == self.local_ip:  # case cam station
+                    try:
+                        with open(self.station_path, 'r') as f:
+                            data = json.load(f)
+                            if CELL_TYPE in data:
+                                self.maincomponent_id = MAIN_ID_FRONT + data[CELL_TYPE]
+                                return True
+                            else:
+                                self.logger.error("Can not find cell type in register.json.")
+                                break
+                    except Exception as e:
+                        self.logger.error(f"Failed to load adc_agent/register.json : {e}.")
+                        break
+                elif addr.address.startswith(self.fixture_ip):  # case fixture station
+                    try:
+                        with open(self.fixture_path, 'r') as f:
+                            data = json.load(f)
+                            if GH_INFO_KEY in data and STATION_NUMBER_KEY in data[GH_INFO_KEY]:
+                                self.station_number = data[GH_INFO_KEY][STATION_NUMBER_KEY]
+                            else:
+                                self.logger.error('Cannot find STATION_NUMBER.')
+                                break
+                            if GH_INFO_KEY in data and STATION_TYPE_KEY in data[GH_INFO_KEY]:
+                                self.station_type = data[GH_INFO_KEY][STATION_TYPE_KEY]
+                            else:
+                                self.logger.error('Cannot find STATION_TYPE.')
+                                break
+                    except FileNotFoundError:
+                        self.logger.error('File gh_station_info.json not found.')
+                        break
+                    except json.JSONDecodeError:
+                        self.logger.error('An error occurred while decoding the JSON file.')
+                        break
+                    except Exception as e:
+                        self.logger.error(f"An error occurred : {e}.")
+                        break
+                    self.maincomponent_id = MAIN_ID_FRONT + self.station_type + "_" + self.station_number
+                    return True
+        return False
+
+    def get_system_name(self):
         try:
             self.system = platform.system()
             self.logger.info(f"System is {self.system}")
         except Exception as e:
             self.logger.error(f"Failed to get system name, error is {e}.")
-            return
+            raise ValueError(f"Failed to get system name: {e}")
 
-        # get pc model
-        self.get_pc_model()
-        if not self.get_total_disk_size():
-            return
+    def get_pc_model(self):
+        UNKNOWN_MODEL = "Unknown Model"
+        if self.system == 'Windows':
+            try:
+                self.pc_model = subprocess.check_output('wmic csproduct get name', shell=True).decode().split('\n')[1]\
+                    .strip()
+            except Exception as e:
+                self.logger.error(f"Failed to get PC model: {e}.")
+                self.pc_model = UNKNOWN_MODEL
+        elif self.system == 'Linux':
+            try:
+                self.pc_model = subprocess.check_output('sudo dmidecode -s system-product-name', shell=True).decode().\
+                    strip()
+            except Exception as e:
+                self.logger.error(f"Failed to get PC model {e}.")
+                self.pc_model = UNKNOWN_MODEL
+        elif self.system == "Darwin":
+            try:
+                result = subprocess.run(['system_profiler', 'SPHardwareDataType'], capture_output=True, text=True)
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if "Model Name" in line:
+                        self.pc_model = line.split(":")[1].strip()
+            except Exception as e:
+                self.logger.error(f"Failed to get PC model: {e}.")
+                self.pc_model = UNKNOWN_MODEL
+        else:
+            self.pc_model = "Unknown System"
+            raise ValueError("Unknown system")
+        self.logger.info(f"Model of this PC is {self.pc_model}.")
 
-        # load config_data
-        # noinspection PyBroadException
+    def get_total_disk_size(self):
         try:
-            with open(self.config_path, 'r') as f:
-                self.config_data = json.load(f)
+            for par in psutil.disk_partitions():
+                usage = psutil.disk_usage(par.mountpoint)
+                self.total_disk += usage.total
+        except Exception as e:
+            self.logger.error(f"Failed to get total disk size, error:{e}.")
+            raise ValueError(f"Failed to get total disk size: {e}")
+
+    def load_configmsg(self):
+        try:
+            with open(self.configmsg_path, 'r') as f:
+                self.config_msg = json.load(f)
             self.logger.info("Config2Send_UsageMonitor.json load success.")
+            self.config_msg["hw_config"] = self.pc_model
+            self.config_msg["sw_version"] = self.system
         except FileNotFoundError:
             self.logger.error("Config2Send_UsageMonitor.json was not found.")
-            return
+            raise ValueError(f"Load config message failed")
         except json.JSONDecodeError:
             self.logger.error("An error occurred while decoding the JSON.")
-            return
-        except Exception:
-            self.logger.error("An unexpected error occurred: ", exc_info=True)
-            return
-        self.config_data["hw_config"] = self.pc_model
-        self.config_data["sw_version"] = self.system
+            raise ValueError(f"Load config message failed")
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred: {e}", exc_info=True)
+            raise ValueError(f"Load config message failed: {e}")
 
-        # init json to send
+    def json_data_init(self):
         self.cpu_message = self.create_json(['name', 'value', 'interval', 'timestamp'],
                                             ['cpu_usage', 0.0, self.report_interval, 0])
         self.ram_message = self.create_json(['name', 'value', 'interval', 'timestamp'],
@@ -192,60 +278,7 @@ class UsageMonitor:
 
         if self.cpu_message is None and self.ram_message is None and self.disk_message is None:
             self.logger.error("All json data to send initialization failed.")
-            return
-
-        # init mqtt
-        if not self.mqtt_client_init():
-            return
-        if not self.mqtt_connect():
-            return
-
-        self.scheduled_report_init()
-        self.scheduled_report_ready = True
-        self.init_success = True
-        self.logger.info("All init done.")
-
-    def get_pc_model(self):
-        if self.system == 'Windows':
-            # noinspection PyBroadException
-            try:
-                self.pc_model = subprocess.check_output('wmic csproduct get name', shell=True).decode().split('\n')[1]\
-                    .strip()
-            except Exception:
-                self.logger.error("Failed to get PC model.")
-                self.pc_model = "Unknown Model"
-        elif self.system == 'Linux':
-            # noinspection PyBroadException
-            try:
-                self.pc_model = subprocess.check_output('sudo dmidecode -s system-product-name', shell=True).decode().\
-                    strip()
-            except Exception:
-                self.logger.error("Failed to get PC model.")
-                self.pc_model = "Unknown Model"
-        elif self.system == "Darwin":
-            # noinspection PyBroadException
-            try:
-                result = subprocess.run(['system_profiler', 'SPHardwareDataType'], capture_output=True, text=True)
-                lines = result.stdout.split('\n')
-                for line in lines:
-                    if "Model Name" in line:
-                        self.pc_model = line.split(":")[1].strip()
-            except Exception:
-                self.logger.error("Failed to get PC model.")
-                self.pc_model = "Unknown Model"
-        else:
-            self.pc_model = "Unknown System"
-        self.logger.info(f"Model of this PC is {self.pc_model}.")
-
-    def get_total_disk_size(self) -> bool:
-        try:
-            for par in psutil.disk_partitions():
-                usage = psutil.disk_usage(par.mountpoint)
-                self.total_disk += usage.total
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to get total disk size, error:{e}.")
-            return False
+            raise ValueError("Usage json data initialize fail")
 
     def create_json(self, index, value):
         try:
@@ -259,51 +292,49 @@ class UsageMonitor:
             return None
         return data_dict
 
-    def mqtt_client_init(self) -> bool:
+    def mqtt_client_init(self):
         try:
-            self.client = mqtt.Client(self.broker, self.port)
+            self.mqtt_client = mqtt.Client(self.local_ip, self.mqtt_port)
             self.logger.info("mqtt client established.")
         except Exception as e:
             self.logger.error(f"Failed to establish mqtt client: {e}")
-            return False
+            raise ValueError(f"MQTT client initialization failed: {e}")
         try:
-            self.client.on_message = self.on_message
+            self.mqtt_client.on_message = self.on_message
             self.logger.info("Message callback registered.")
         except Exception as e:
             self.logger.error(f"Failed to register message callback: {e}")
-            return False
+            raise ValueError(f"MQTT client initialization failed: {e}")
         try:
-            self.client.on_connect = self.on_connect
+            self.mqtt_client.on_connect = self.on_connect
             self.logger.info("Connect callback registered.")
         except Exception as e:
             self.logger.error(f"Failed to register connect callback: {e}")
-            return False
-        return True
+            raise ValueError(f"MQTT client initialization failed: {e}")
 
-    def mqtt_connect(self) -> bool:
+    def mqtt_connect(self):
         retry_count = 0
         while retry_count < self.connect_retry_times:
             retry_count += 1
             try:
-                self.client.connect("localhost", self.port, 60)
-                self.logger.info("Connect to broker success.")
+                self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, self.mqtt_keepalive)
+                self.logger.info("Set mqtt connection parameters.")
                 break
             except Exception as e:
-                self.logger.error(f"Failed to connect to the broker: {e}, trial {retry_count}.")
+                self.logger.error(f"Failed to set mqtt connection parameters: {e}.")
                 if retry_count == self.connect_retry_times:
-                    return False
-                time.sleep(1)
+                    self.logger.error(f"Set mqtt connection parameters failed {self.connect_retry_times} time, exit.")
+                    raise ValueError("MQTT set connection failed")
 
-        (result, mid) = self.client.subscribe('/Devices/adc_agent/QueryConfig')
+        (result, mid) = self.mqtt_client.subscribe(self.query_config_topic)
         if result == mqtt.MQTT_ERR_SUCCESS:
             self.logger.info("Subscribe successfully.")
         elif result == mqtt.MQTT_ERR_NO_CONN:
-            self.logger.error(f"Subscription failed, no connection.")
-            return False
+            self.logger.error("Subscription failed, no connection.")
+            raise ValueError("MQTT set connection failed")
         else:
             self.logger.error(f"Subscription failed, error code : {result}.")
-            return False
-        return True
+            raise ValueError("MQTT set connection failed")
 
     def scheduled_report_init(self):
         if self.scheduled_report_thread is not None:
@@ -315,11 +346,11 @@ class UsageMonitor:
         self.logger.info("Scheduled report initialized.")
 
     def send_config(self) -> bool:
-        self.config_data['timestamp'] = time.time()
-        data2send = json.dumps(self.config_data)
-        if self.client:
+        self.config_msg['timestamp'] = time.time()
+        data2send = json.dumps(self.config_msg)
+        if self.mqtt_client:
             try:
-                self.client.publish(self.config_topic, data2send)
+                self.mqtt_client.publish(self.config_topic, data2send)
                 self.logger.info("Config message published.")
                 self.logger.info(f"Config message: {data2send}.")
             except Exception as e:
@@ -330,11 +361,11 @@ class UsageMonitor:
             return False
         return True
 
-    def on_message(self, client, userdata, message):
+    def on_message(self, _, __, message):
         if message.topic == self.query_config_topic:
             self.send_config()
 
-    def on_connect(self, client, userdata, flags, rc):
+    def on_connect(self, _, __, ___, rc):
         if rc == 0:
             self.logger.info("Connected successfully.")
         else:
@@ -372,9 +403,9 @@ class UsageMonitor:
             self.logger.error(f"Failed to dump to json file : {e}.")
             return False
         try:
-            self.client.publish(self.analog_topic, cpu_message)
-            self.client.publish(self.analog_topic, ram_message)
-            self.client.publish(self.analog_topic, disk_message)
+            self.mqtt_client.publish(self.analog_topic, cpu_message)
+            self.mqtt_client.publish(self.analog_topic, ram_message)
+            self.mqtt_client.publish(self.analog_topic, disk_message)
         except Exception as e:
             self.logger.error(f"Failed to publish : {e}.")
             return False
@@ -404,8 +435,8 @@ class UsageMonitor:
         self.logger.info("Thread end.")
 
     def start(self):
-        if self.client:
-            self.client.loop_start()
+        if self.mqtt_client:
+            self.mqtt_client.loop_start()
             self.logger.info("Mqtt loop started.")
             for i in range(0, self.connect_retry_times):
                 if self.send_config():
@@ -425,11 +456,3 @@ if __name__ == '__main__':
     new = UsageMonitor()
     if new.init_success:
         new.start()
-    # os.environ['PYVISA_SIM_CONFIG'] = "C:/vault/pyvisa-test/my_instrument.yaml"
-    # rm = ResourceManager('@sim')
-    # inst = rm.open_resource('ASRL1::INSTR')
-    # inst.timeout = 2000
-    # inst.write('?IDN')
-    # resp = inst.read()
-    # print(resp)
-    # inst.close()
