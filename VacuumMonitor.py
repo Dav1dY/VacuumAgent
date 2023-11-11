@@ -96,7 +96,7 @@ class Vacuum:
             self.socket_connect_with_retry()
             self.mqtt_client_init()
             self.mqtt_connect()
-            self.start_scheduled_init()
+            self.scheduled_report_init()
             self.scheduled_report_ready = True
             self.init_success = True
             self.logger.info("All init done.")
@@ -276,7 +276,7 @@ class Vacuum:
             self.logger.error(f"Failed to subscribe. Result code: {subscribe_result}")
             raise ValueError("MQTT set connection failed")
 
-    def start_scheduled_init(self):
+    def scheduled_report_init(self):
         if self.scheduled_report_thread is not None:
             self.logger.error("Scheduled report already started.")
             return

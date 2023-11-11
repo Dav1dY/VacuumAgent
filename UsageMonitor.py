@@ -13,6 +13,7 @@ from typing import Optional
 
 class UsageMonitor:
     CLASS_NAME = '/UsageMonitor'
+    REPORTER_NAME = 'ReportThread'
     CONFIG_PATH = '/vault/UsageMonitor/config/UsageMonitor_config.json'
 
     def __init__(self):
@@ -39,6 +40,7 @@ class UsageMonitor:
         self.disk_usage = None
         self.maincomponent_id = None
         self.subcomponent_id = self.CLASS_NAME
+        self.mqtt_connect_state = False
 
         self.fixture_ip = "10.0.1."
         self.local_ip = "10.0.1.200"
@@ -339,11 +341,13 @@ class UsageMonitor:
     def scheduled_report_init(self):
         if self.scheduled_report_thread is not None:
             self.logger.error("Scheduled report already initialized.")
-            self.scheduled_report_thread.setDaemon(True)
             return
-        self.scheduled_report_thread = threading.Thread(target=self.scheduled_report)
-        self.scheduled_report_thread.setDaemon(True)
-        self.logger.info("Scheduled report initialized.")
+        try:
+            self.scheduled_report_thread = threading.Thread(name=self.REPORTER_NAME, target=self.scheduled_report)
+            self.scheduled_report_thread.setDaemon(True)
+            self.logger.info("Scheduled report initialized.")
+        except Exception as e:
+            raise ValueError(f"Report thread initialization failed: {e}")
 
     def send_config(self) -> bool:
         self.config_msg['timestamp'] = time.time()
@@ -367,8 +371,10 @@ class UsageMonitor:
 
     def on_connect(self, _, __, ___, rc):
         if rc == 0:
+            self.mqtt_connect_state = True
             self.logger.info("Connected successfully.")
         else:
+            self.mqtt_connect_state = False
             self.logger.error(f"Connection failed with error code {rc}.")
 
     def get_all_disk_usage(self):
@@ -424,7 +430,7 @@ class UsageMonitor:
     def scheduled_report(self):
         self.logger.info("Thread start.")
         update_fail_count = 0
-        while self.scheduled_report_ready:
+        while self.scheduled_report_ready and self.mqtt_client:
             if self.update_info():
                 update_fail_count = 0
             else:
@@ -435,9 +441,20 @@ class UsageMonitor:
         self.logger.info("Thread end.")
 
     def start(self):
+        MQTT_CONN_TIMEOUT = 3
         if self.mqtt_client:
-            self.mqtt_client.loop_start()
-            self.logger.info("Mqtt loop started.")
+            try:
+                self.mqtt_client.loop_start()
+                self.logger.info("Mqtt loop started.")
+            except Exception as e:
+                self.logger.error(f"Mqtt loop start fail: {e}.")
+                return
+            s_time = time.time()
+            while not self.mqtt_connect_state:
+                if time.time()-s_time > MQTT_CONN_TIMEOUT:
+                    self.logger.error("Mqtt client failed to connect to broker, timeout.")
+                    return
+                time.sleep(0.1)
             for i in range(0, self.connect_retry_times):
                 if self.send_config():
                     break
