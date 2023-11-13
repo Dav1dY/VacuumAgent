@@ -14,7 +14,7 @@ from typing import Optional
 
 
 class Vacuum:
-    # define class constant
+    # class constant
     CLASS_NAME = 'VacuumMonitor'
     REPORTER_NAME = 'ReportThread'
     CONFIG_PATH = '/vault/VacuumMonitor/config/vacuum_config.json'
@@ -31,8 +31,14 @@ class Vacuum:
     CHECK_RESP = ',UPDATE_IO,'
     ANALOG_CMD = ',QUERY_ANALOG#'
     ANALOG_RESP = ',REPORT_ANALOG,(\\s*)(\\d+)'
+    CLEAR_CMD = ',CLEAR_ERROR#'
     CMD_END = '#'
     ENCODE_MODE = 'UTF-8'
+
+    # update state
+    UPDATE_SUCCESS = 0
+    UPDATE_FAIL = 1
+    WRONG_PLC_PROG = 2
 
     def __init__(self):
         self.init_success = False
@@ -45,7 +51,7 @@ class Vacuum:
         self.current_time = 0
         self.port_in_use = 0
         self.connection_state = False
-        self.update_state = False
+        self.update_state = self.UPDATE_FAIL
         self.sock = None
         self.mqtt_client = None
         self.mqtt_connect_state = False
@@ -351,7 +357,7 @@ class Vacuum:
                 self.logger.info(f"DATA = {data}.")
                 self.update_json(data, sn)
 
-                if self.update_state:
+                if self.update_state == self.UPDATE_SUCCESS:
                     try:
                         with open(self.analog_path, 'r') as f:
                             json_data = json.dumps(json.load(f))
@@ -442,7 +448,7 @@ class Vacuum:
             return False
 
     def update_json(self, data, sn):
-        self.update_state = False
+        self.update_state = self.UPDATE_FAIL
 
         if data:
             try:
@@ -459,9 +465,11 @@ class Vacuum:
                     analog_data = int(match.group(2))
                 else:
                     self.logger.error("Receive bad message1.")
+                    self.update_state = self.WRONG_PLC_PROG
                     return
             except ValueError:
                 self.logger.error("Receive bad message2.")
+                self.update_state = self.WRONG_PLC_PROG
                 return
         else:
             # case that socket receives timeout and have no data send back
@@ -488,7 +496,7 @@ class Vacuum:
             return
 
         self.last_time = self.current_time
-        self.update_state = True
+        self.update_state = self.UPDATE_SUCCESS
 
     def scheduled_report(self):
         self.logger.info("Thread start.")
@@ -567,7 +575,7 @@ class Vacuum:
                 send_failed_count = 0
             self.update_json(data, sn)  # update json
 
-            if self.update_state:
+            if self.update_state == self.UPDATE_SUCCESS:
                 try:
                     with open(self.analog_path, 'r') as f:
                         json_data = json.dumps(json.load(f))
@@ -591,6 +599,35 @@ class Vacuum:
                 except Exception as e:
                     publish_failed_count += 1
                     self.logger.error(f"An unexpected error occurred: {e}, trial {publish_failed_count}.")
+            elif self.update_state == self.WRONG_PLC_PROG:
+                self.logger.error("Wrong PLC program, will exit.")
+                sn = f'{self.protocol_sn:05d}'
+                message = sn + self.CLEAR_CMD
+                message = message.encode()
+                _, ready_to_write, _ = select.select([], [self.sock], [], self.socket_timeout)
+                if ready_to_write:
+                    try:
+                        if self.socket_send(message):
+                            self.logger.info("Command sent.")
+                        else:
+                            self.logger.error(f"Failed to send command, directly exit.")
+                            break
+                    except Exception as e:
+                        self.logger.error(f"Failed to send command: {e}, directly exit.")
+                        break
+                else:
+                    self.logger.error(f"Socket unable to write, directly exit.")
+                    break
+                ready_to_read, _, _ = select.select([self.sock], [], [], self.socket_timeout)
+                if ready_to_read:
+                    try:
+                        self.sock.recv(1024)
+                        self.logger.info("Reply received, will exit.")
+                    except Exception as e:
+                        self.logger.error(f"Failed to receive: {e}, directly exit.")
+                else:
+                    self.logger.error(f"Socket unable to read, directly exit.")
+                break
 
         self.logger.info("Thread end.")
         self.scheduled_report_ready = False
@@ -653,6 +690,7 @@ class Vacuum:
     def clean_up(self):
         if self.sock:
             self.sock.close()
+        self.logger.info("Socket closed.")
         self.sock = None
 
     def sn_add(self):
